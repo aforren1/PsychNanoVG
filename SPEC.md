@@ -34,7 +34,8 @@ profiles, gradient fills, vector icons, and text with sub-pixel positioning.
 - Drawing directly into the PTB window, or into an offscreen render target that
   becomes a PTB texture.
 - MATLAB R2023a and Octave 10.1 on Windows, verified. Linux expected to work.
-  macOS best effort.
+  macOS on Apple silicon (`maca64`) built and tested on a CI runner, with
+  the GL2 backend. Intel Macs are not covered.
 
 ### 1.3 Out of scope
 
@@ -114,7 +115,11 @@ These facts come from the PTB source tree, `PsychSourceGL/Source/`.
   buffer for concave fills and for `NVG_STENCIL_STROKES`.
 - PTB contexts are legacy compatibility contexts. NanoVG's GL3 backend
   (`#version 150 core` shaders) works on Windows and Linux. macOS PTB contexts
-  are GL 2.1, so the GL2 backend is used there.
+  are GL 2.1, so the GL2 backend is used there. The backend is fixed when the
+  static library is compiled, because `nanovg_gl.h` is one implementation
+  unit: CMake defines `NANOVG_GL2_IMPLEMENTATION` on Apple and
+  `NANOVG_GL3_IMPLEMENTATION` everywhere else, and `build.m` passes the
+  matching `PNVG_GL2` to `mex`.
 - `Screen('SetOpenGLTexture', win, tex, glTexId, target, w, h)` wraps an
   external GL texture. `Screen('GetOpenGLTexture', win, tex)` returns the GL
   texture id and target of a PTB texture (`Common/Screen/SCREENGetOpenGLTexture.c`).
@@ -559,7 +564,7 @@ section 9.4.
 | Upstream NanoVG maintenance is slow | The library is small and stable. The submodule pins a commit. |
 | GL state left by NanoVG affects other userspace GL code | `EndFrame` restores viewport, blend, and active texture. PTB's own context is isolated regardless. |
 | Column-major image data | Transposed into a scratch buffer in `CreateImageRGBA` and `UpdateImage`. Cost is one pass over the image. |
-| macOS GL 2.1 | GL2 backend, no VAO, `#version 120` shaders. Best effort. |
+| macOS GL 2.1 | GL2 backend, no VAO, `#version 120` shaders. Built and tested on `macos-latest`. The GL2 backend needs the framebuffer object entry points, which are not core in 2.1, so glad is generated with `GL_ARB_framebuffer_object`. |
 
 ### 12.2 Alternatives considered
 
@@ -582,7 +587,7 @@ section 9.4.
 | Should `Init` default `NVG_STENCIL_STROKES` on? | Yes. It gives correct overlapping strokes at a small cost. |
 | Provide `FindSystemFont` at all, or require explicit paths? | Provide it. Experiments run on lab machines with unknown font sets. |
 | Should `Polyline` accept single as well as double? | Yes, both, converted to float in the handler. |
-| macOS support? | Best effort with the GL2 backend. Not CI-blocking. |
+| macOS support? | Apple silicon, with the GL2 backend, built and tested by CI. The three macOS jobs carry `continue-on-error` until the first green run. Intel Macs are not covered. |
 
 ## 13. Phasing
 
@@ -659,6 +664,7 @@ that need no GL and compiling the GL code without running it.
 | Five M-files sit between a script and the MEX: `PsychNanoVGSetup`, `PsychNanoVGOpen`, `PsychNanoVGFrame`, `PsychNanoVGGL`, and `PsychNanoVGClose`. Section 5.4 lists only the help text, the opcodes, the font search, and the demo, and section 4.3 had the script write every `Screen('BeginOpenGL')` pair itself. | An unbalanced pair leaves Psychtoolbox in userspace rendering mode, and every later `Screen` drawing command then goes to the wrong place. A script cannot get that wrong if it never writes the pair. The helpers also give the three sibling projects one shape to share. The raw form stays documented, because several subcommands in one region, such as a render target, still need it. `PsychNanoVGOpen` adds one identifier to section 5.5, `psychnanovg:No3DGraphics`, for a window that was opened without `InitializeMatlabOpenGL`. |
 | `h_FindSystemFont` duplicates its argument before it calls `mexCallMATLAB`, and `num_at` no longer calls `mexCallMATLAB` at all. | The first version passed `prhs[0]` straight into `mexCallMATLAB`, which gives the interpreter a second owner of an array that it already owns. The MEX API forbids it, and Octave can free the array. `num_at` used the same call to widen the rare integer classes; it now reads every numeric class from `mxGetData`, which is also one fewer place where the interpreter can run inside an argument reader. |
 | `tests/run_tests.m` puts `tests/stub` on the path once, before the first call loads the MEX file, and `tests/test_helpers.m` changes nothing about the path. The stub is removed again only on a machine that has Psychtoolbox, just before `tests/gl`. | A load path change, or a `rehash`, while a locked MEX file is loaded sends Octave 10 into an endless recursion: after `warning: library ... not reloaded due to existing references`, `octave::out_of_date_check` asks the breakpoint table to drop the breakpoints of the function it is about to reload, and that lookup re-enters `out_of_date_check`. The two alternate for more than 35000 stack frames until the stack is exhausted and the process takes SIGSEGV. `test_helpers` used to add and remove the stub directory itself, with an `onCleanup`, which is what started the cycle on the `build . linux . Octave 10.1.0` job; Octave 6.4 has no such cycle and MATLAB is unaffected, which is why only that job failed. Changing the path once, before the MEX is loaded, removes the trigger, and `PsychNanoVGSetup` is idempotent for the same reason, because `PsychNanoVGOpen` calls it on every open. The backtrace comes from the PsychLVGL worker, who reproduced the recursion deterministically in the same image by touching the MEX and calling `rehash` while it was locked and live. |
+| macOS on Apple silicon is built and tested by CI, with the GL2 backend. `Init` accepts `auto`, `null`, and the one GL backend that the build has, and refuses the other by name. glad is generated with `GL_ARB_framebuffer_object`. `tests/smoke_gl.c` gained a CGL branch that renders into a render target. | Sections 1.2, 12.1, and 12.3 called macOS best effort and not CI-blocking, and section 10.2 named no macOS build. The backend cannot be chosen at run time, because `nanovg_gl.h` is one implementation unit, so `opts.renderer` now validates against the compiled backend instead of pretending to pick one. The GL2 backend calls the unsuffixed framebuffer object entry points, which are not core in GL 2.1, so glad has to load them from `GL_ARB_framebuffer_object`; one glad header still serves every platform, because those names resolve from core on GL 3.3. `nanovg_gl_utils.h` includes `<OpenGL/glext.h>` on an Apple GL2 build, which would collide with glad, so `pnvg_gl.c` sets that header's include guards first. A CGL context has no drawable and therefore no default framebuffer or stencil buffer, so the macOS smoke test binds a NanoVG render target and reads the stencil size from that. Nobody on the team has a Mac: the three macOS CI jobs carry `continue-on-error` until the first green run, and everything in this row was checked by inspection and by compiling the shared code on Windows and Linux, not on macOS. |
 | `FindSystemFont` walks three directory levels, not one. | The Linux layout is `/usr/share/fonts/truetype/<family>/<file>.ttf`, which is two levels below the root that section 6.3 lists. With one level the search found nothing on Ubuntu. `dir('**')` is a MATLAB extension that Octave does not have, so the walk is explicit and depth limited. |
 
 ### 14.5 Native GL smoke test

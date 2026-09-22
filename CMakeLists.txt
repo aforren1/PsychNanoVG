@@ -45,7 +45,10 @@ target_compile_definitions(pnvg PUBLIC PSYCHNANOVG_STATS=${PSYCHNANOVG_STATS})
 # SPEC 4.1: Psychtoolbox contexts are GL 2.1 on macOS, so the GL2 backend is
 # the only one that works there.
 if(APPLE)
-    target_compile_definitions(pnvg PUBLIC PNVG_GL2=1)
+    # OpenGL is deprecated on macOS but still present, and it is what
+    # Psychtoolbox uses. The define silences the deprecation warning on
+    # every OpenGL and CGL call so a real warning stays visible.
+    target_compile_definitions(pnvg PUBLIC PNVG_GL2=1 GL_SILENCE_DEPRECATION=1)
 endif()
 
 if(PSYCHNANOVG_TRACY)

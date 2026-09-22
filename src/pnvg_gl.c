@@ -19,6 +19,22 @@
 #  define NANOVG_GL3_IMPLEMENTATION
 #endif
 #include "nanovg_gl.h"
+
+#if defined(__APPLE__) && defined(PNVG_GL2)
+/* nanovg_gl_utils.h includes <OpenGL/glext.h> on an Apple GL2 build, to get
+ * the framebuffer object entry points. glad already declares those, and the
+ * two sets of declarations do not agree, because glad turns each name into a
+ * function pointer. Setting the header's own include guards first makes that
+ * include expand to nothing; the NANOVG_FBO_VALID define next to it still
+ * happens, and glad supplies the entry points through
+ * GL_ARB_framebuffer_object. */
+#  ifndef __glext_h_
+#    define __glext_h_ 1
+#  endif
+#  ifndef __gl_glext_h_
+#    define __gl_glext_h_ 1
+#  endif
+#endif
 #include "nanovg_gl_utils.h"
 
 #include "core/pnvg_core.h"

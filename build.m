@@ -115,6 +115,11 @@ function build_library(builddir, instdir, is_octave, smoke)
         if strcmpi(gen, 'MinGW Makefiles')
             cleanup = drop_sh_from_path();  %#ok<NASGU>
         end
+    elseif ismac
+        % clang is the only compiler on a Mac runner, for both engines, and
+        % "Unix Makefiles" is the generator that suits it. Xcode would work
+        % too but puts the archive in a per-configuration subdirectory.
+        cfg = [cfg ' -G "Unix Makefiles"'];
     elseif ispc && is_octave
         % Octave on Windows is an MSYS2 tree: MinGW gcc in mingw64/bin, and
         % GNU make with sh in usr/bin. The archive has to come from that gcc
@@ -144,6 +149,13 @@ function build_library(builddir, instdir, is_octave, smoke)
     if system(cfg) ~= 0
         fprintf('cmake configure failed; wiping %s and retrying\n', builddir);
         rm_dir(builddir);
+        % A build tree made by another account, for instance by a Docker
+        % container running as root on a shared mount, cannot be deleted
+        % from here. Say so, because the retry would then fail on the
+        % stale cache with a message that does not point at the cause.
+        assert(exist(builddir, 'dir') == 0, 'build:stale', ...
+               ['%s could not be removed. Delete it with the account ' ...
+                'that created it, then build again.'], builddir);
         mkdir(builddir);
         run_cmd(cfg);
     end
@@ -247,10 +259,18 @@ function build_mex(libfile, is_octave)
         % The classic mx* API, so one source builds for both engines.
         args{end+1} = '-R2017b';
     end
+    if ismac
+        % SPEC 4.1: Psychtoolbox makes legacy GL 2.1 contexts on macOS, so
+        % CMake compiles the GL2 backend there. The MEX has to agree, because
+        % it reports the backend and validates opts.renderer.
+        args{end+1} = '-DPNVG_GL2=1';
+    end
     args = [args, srcs, {libfile}];
     if ispc
         args{end+1} = '-lopengl32';
     elseif ismac
+        % mex and mkoctfile both drive clang here, and the framework flag has
+        % to reach the linker as two separate words.
         args{end+1} = '-framework';
         args{end+1} = 'OpenGL';
     else

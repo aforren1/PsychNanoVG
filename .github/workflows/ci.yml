@@ -29,6 +29,11 @@ name: CI
 # download it back into the same place. PsychNanoVGSetup puts the right one on
 # the path.
 #
+# The macOS jobs are new and nobody on the team has a Mac, so they carry
+# continue-on-error until the first green run. macOS gets the NanoVG GL2
+# backend, because SPEC 4.1 records that Psychtoolbox makes legacy OpenGL 2.1
+# contexts there. Only Apple silicon is covered; Intel Macs are not.
+#
 # third_party/nanovg becomes a git submodule of this repository, and
 # third_party/PINS.md already holds the pinned commit. Every checkout below
 # asks for submodules, and every build job then clones that commit when the
@@ -50,12 +55,17 @@ jobs:
   matlab-build:
     name: build · ${{ matrix.os }} · MATLAB ${{ matrix.release }}
     runs-on: ${{ matrix.os }}
+    # Only the macOS entry is allowed to fail. Drop this line, and the two
+    # other continue-on-error lines below, after the first green macOS run.
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: ubuntu-22.04,  release: R2021b, arch: glnxa64, asset: psychnanovg-matlab-linux }
           - { os: windows-2022,  release: R2022b, arch: win64,   asset: psychnanovg-matlab-windows }
+          # R2023b is the first MATLAB that runs natively on Apple silicon.
+          - { os: macos-latest,  release: R2023b, arch: maca64,  asset: psychnanovg-matlab-macos }
     steps:
       - uses: actions/checkout@v7
         with:
@@ -114,12 +124,14 @@ jobs:
     name: test · ${{ matrix.os }} · MATLAB ${{ matrix.release }}
     needs: matlab-build
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: ubuntu-latest,  release: latest, asset: psychnanovg-matlab-linux }
           - { os: windows-latest, release: latest, asset: psychnanovg-matlab-windows }
+          - { os: macos-latest,   release: latest, asset: psychnanovg-matlab-macos }
     steps:
       # tests/ and m/ only. No rebuild, so no NanoVG and no submodule.
       - uses: actions/checkout@v7
@@ -350,6 +362,76 @@ jobs:
           cmake -S . -B build-smoke -DPSYCHNANOVG_SMOKE_GL=ON
           cmake --build build-smoke --config Release --target smoke_gl
 
+  # =============================================================== macOS ======
+  # Homebrew ships one current Octave, so there is no floor to pin here.
+  octave-macos:
+    name: build · macos · Octave (Homebrew)
+    runs-on: macos-latest
+    # New job. Becomes blocking after the first green run.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Fetch NanoVG at the pinned commit
+        run: |
+          if [ ! -f third_party/nanovg/src/nanovg.h ]; then
+            commit=$(grep -oE '[0-9a-f]{40}' third_party/PINS.md | head -1)
+            echo "cloning NanoVG at $commit"
+            git clone https://github.com/memononen/nanovg.git third_party/nanovg
+            git -C third_party/nanovg checkout --quiet "$commit"
+          fi
+
+      - name: Install Octave
+        run: brew install octave
+
+      - name: Build and test
+        run: |
+          octave --no-gui --eval "build"
+          octave --no-gui --eval "addpath('tests'); run_tests"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: psychnanovg-octave-macos
+          path: |
+            dist/maca64
+            m
+            README.md
+            SPEC.md
+          if-no-files-found: error
+
+  # The runner has no display, so smoke_gl makes a CGL context with no
+  # drawable and renders into a NanoVG render target. See tests/smoke_gl.c.
+  smoke-gl-macos:
+    name: smoke · macos · CGL and a render target
+    runs-on: macos-latest
+    # New job. Becomes blocking after the first green run.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Fetch NanoVG at the pinned commit
+        run: |
+          if [ ! -f third_party/nanovg/src/nanovg.h ]; then
+            commit=$(grep -oE '[0-9a-f]{40}' third_party/PINS.md | head -1)
+            echo "cloning NanoVG at $commit"
+            git clone https://github.com/memononen/nanovg.git third_party/nanovg
+            git -C third_party/nanovg checkout --quiet "$commit"
+          fi
+
+      - name: Build smoke_gl
+        run: |
+          cmake -S . -B build-smoke-mac -DCMAKE_BUILD_TYPE=Release \
+                -DPSYCHNANOVG_SMOKE_GL=ON
+          cmake --build build-smoke-mac --target smoke_gl
+
+      - name: Run smoke_gl
+        run: ./build-smoke-mac/smoke_gl
+
   # ============================================================== Release =====
   # On a v* tag, publish the floor-built packages as a GitHub Release. It runs
   # only after every build, forward test, and smoke job passes, so a release
@@ -362,8 +444,10 @@ jobs:
       - octave-build
       - octave-test-forward
       - octave-windows
+      - octave-macos
       - smoke-gl-linux
       - smoke-gl-windows-compile
+      - smoke-gl-macos
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:

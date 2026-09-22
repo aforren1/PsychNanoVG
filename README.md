@@ -24,7 +24,8 @@ binding, how to test it, and how to use it.
 | `tests/gl/` under Octave | Skipped. The Psychtoolbox `Screen` MEX for Octave does not load on the development machine. |
 | `m/PsychNanoVGDemo` | Written, not run. It holds a full screen window for six seconds. |
 | Linux | Works. Built and tested with Octave 6.4 on Ubuntu 22.04, and `smoke_gl` runs under Xvfb with Mesa llvmpipe. |
-| macOS | Written, not run. |
+| macOS on Apple silicon | Built and tested on the `macos-latest` runner, with the GL2 backend. The three macOS jobs are new and carry `continue-on-error` until the first green run. |
+| macOS on Intel | Not covered. |
 | Tracy | A CMake option that is off. Only the dispatch zone is wired up. |
 
 See the last section of `SPEC.md` for the full list of deviations.
@@ -144,6 +145,8 @@ step runs at the repository root.
 | `octave-windows` | Builds and tests with the official GNU Octave Windows zip (10.1.0, cached), using the toolchain and `make` it ships, as on a developer machine. Uploads the package. |
 | `smoke-gl-linux` | Builds `smoke_gl` and runs it under `xvfb-run` with Mesa llvmpipe. This is the only automated OpenGL coverage. |
 | `smoke-gl-windows-compile` | Compiles `smoke_gl` with MSVC. The hosted Windows runner has no GPU, so it is not run. |
+| `octave-macos` | Builds and tests with Homebrew Octave on Apple silicon. Uploads the package. |
+| `smoke-gl-macos` | Builds `smoke_gl` and runs it against a CGL context with no drawable, rendering into a render target. |
 | `release` | On a `v*` tag, zips every package and publishes a GitHub Release with `gh release create`. |
 
 No runner has a GPU, so every job runs the `renderer='null'` suite. The tests
@@ -392,3 +395,9 @@ reported. The generator does not guess.
 
 NanoVG is zlib licensed. glad output is in the public domain, with an MIT
 option. This binding follows the license of the workspace.
+
+## Releasing
+
+A release is a `v*` tag; CI builds and publishes the packages. The
+step-by-step checklist, including where the version string lives and how to
+recover from a failed release job, is in [RELEASING.md](RELEASING.md).

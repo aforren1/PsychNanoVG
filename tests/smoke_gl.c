@@ -24,8 +24,20 @@
 #  include <GL/gl.h>
 #elif defined(__APPLE__)
 #  include <OpenGL/gl.h>
+#  include <OpenGL/OpenGL.h>
+#  include <OpenGL/CGLRenderers.h>
 #else
 #  include <GL/glx.h>
+#endif
+
+/* A CGL context has no drawable unless it is attached to a window, so the
+ * macOS run draws into a NanoVG render target instead of a default
+ * framebuffer. The target carries its own stencil renderbuffer, which is what
+ * the fills and NVG_STENCIL_STROKES need. */
+#if defined(__APPLE__)
+#  define SMOKE_OFFSCREEN 1
+#else
+#  define SMOKE_OFFSCREEN 0
 #endif
 
 #include "nanovg.h"
@@ -151,15 +163,83 @@ static void platform_close(void)
 
 #elif defined(__APPLE__)
 
-/* macOS: compiled, not implemented. A context there needs CGL or Cocoa, and
- * SPEC 4.1 puts macOS on the GL2 backend, which this test does not build. */
+static CGLContextObj g_cgl;
+static CGLPixelFormatObj g_pix;
+
+static CGLError choose_pixel_format(int software, CGLPixelFormatObj *pix,
+                                    GLint *npix)
+{
+    /* No kCGLPFAOpenGLProfile attribute, so this is the legacy profile, which
+     * is OpenGL 2.1. SPEC 4.1: that is what Psychtoolbox creates on macOS,
+     * and it is why the macOS build uses the NanoVG GL2 backend. */
+    CGLPixelFormatAttribute hw[] = {
+        kCGLPFAColorSize,   (CGLPixelFormatAttribute)24,
+        kCGLPFAAlphaSize,   (CGLPixelFormatAttribute)8,
+        kCGLPFADepthSize,   (CGLPixelFormatAttribute)24,
+        kCGLPFAStencilSize, (CGLPixelFormatAttribute)8,
+        (CGLPixelFormatAttribute)0
+    };
+    /* The software renderer, in case a runner has no usable GPU. */
+    CGLPixelFormatAttribute sw[] = {
+        kCGLPFARendererID,
+        (CGLPixelFormatAttribute)kCGLRendererGenericFloatID,
+        kCGLPFAColorSize,   (CGLPixelFormatAttribute)24,
+        kCGLPFAAlphaSize,   (CGLPixelFormatAttribute)8,
+        kCGLPFADepthSize,   (CGLPixelFormatAttribute)24,
+        kCGLPFAStencilSize, (CGLPixelFormatAttribute)8,
+        (CGLPixelFormatAttribute)0
+    };
+    return CGLChoosePixelFormat(software ? sw : hw, pix, npix);
+}
+
 static int platform_open(int *stencilBits)
 {
-    (void)stencilBits;
-    return 0;
+    GLint npix = 0, value = 0;
+    CGLError err;
+
+    err = choose_pixel_format(0, &g_pix, &npix);
+    if (err != kCGLNoError || g_pix == NULL || npix == 0) {
+        printf("  no accelerated pixel format, trying the software renderer\n");
+        err = choose_pixel_format(1, &g_pix, &npix);
+    }
+    if (err != kCGLNoError || g_pix == NULL || npix == 0) {
+        printf("  CGLChoosePixelFormat failed (%d)\n", (int)err);
+        return 0;
+    }
+
+    CGLDescribePixelFormat(g_pix, 0, kCGLPFAStencilSize, &value);
+    *stencilBits = (int)value;
+
+    err = CGLCreateContext(g_pix, NULL, &g_cgl);
+    if (err != kCGLNoError || g_cgl == NULL) {
+        printf("  CGLCreateContext failed (%d)\n", (int)err);
+        return 0;
+    }
+    err = CGLSetCurrentContext(g_cgl);
+    if (err != kCGLNoError) {
+        printf("  CGLSetCurrentContext failed (%d)\n", (int)err);
+        return 0;
+    }
+    return 1;
 }
-static void platform_swap(void) {}
-static void platform_close(void) {}
+
+static void platform_swap(void)
+{
+    /* No drawable, so there is nothing to present. glFlush keeps the frames
+     * from piling up in the command queue. */
+    glFlush();
+}
+
+static void platform_close(void)
+{
+    CGLSetCurrentContext(NULL);
+    if (g_cgl)
+        CGLDestroyContext(g_cgl);
+    if (g_pix)
+        CGLDestroyPixelFormat(g_pix);
+    g_cgl = NULL;
+    g_pix = NULL;
+}
 
 #else /* X11 and GLX */
 
@@ -288,6 +368,8 @@ int main(void)
     double times[SMOKE_FRAMES];
     double polyTimes[SMOKE_FRAMES];
     int i, changed = 0;
+    int drawStencil = 0;
+    int offscreen = -1;
     size_t nbytes = (size_t)SMOKE_W * SMOKE_H * 4;
 
     printf("psychnanovg GL smoke test\n");
@@ -307,7 +389,30 @@ int main(void)
     printf("  GL_VERSION:  %s\n", st->glVersion);
     printf("  GL_RENDERER: %s\n", st->glRenderer);
     printf("  GL_STENCIL_BITS reported by Init: %d\n", st->stencilBits);
-    check(st->stencilBits >= 8, "the drawing target has 8 stencil bits");
+
+#if SMOKE_OFFSCREEN
+    /* The context has no default framebuffer, so everything below draws into
+     * a render target. Init read the stencil bits of a framebuffer that does
+     * not exist, so read them again once the target is bound. */
+    offscreen = pnvg_target_create(SMOKE_W, SMOKE_H, 0);
+    check(offscreen > 0, "the offscreen render target was created");
+    if (offscreen < 1) {
+        printf("  %s\n", pnvg_last_error());
+        pnvg_shutdown();
+        platform_close();
+        return 1;
+    }
+    check(pnvg_target_bind(offscreen) == PNVG_OK,
+          "the offscreen render target is bound");
+    {
+        char v[128], r[128];
+        pnvg_gl_query_info(v, sizeof(v), r, sizeof(r), &drawStencil);
+    }
+    printf("  GL_STENCIL_BITS of the render target: %d\n", drawStencil);
+#else
+    drawStencil = st->stencilBits;
+#endif
+    check(drawStencil >= 8, "the drawing target has 8 stencil bits");
 
     fontPath = find_font();
     if (fontPath) {
@@ -438,6 +543,11 @@ int main(void)
         }
     }
 
+#if SMOKE_OFFSCREEN
+    check(pnvg_target_unbind() == PNVG_OK, "the offscreen target is released");
+    check(pnvg_target_delete(offscreen) == PNVG_OK,
+          "the offscreen target is deleted");
+#endif
     check(pnvg_shutdown() == PNVG_OK, "Shutdown succeeded");
     check(glGetError() == GL_NO_ERROR, "no GL error is pending after Shutdown");
 

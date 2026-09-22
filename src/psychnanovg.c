@@ -490,7 +490,7 @@ static int opt_flag(const mxArray *opts, const char *name, int dflt)
 void h_Init(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     const mxArray *opts = (nrhs > 0) ? prhs[0] : NULL;
-    int flags = 0, backend = PNVG_BACKEND_GL3, st;
+    int flags = 0, backend = PNVG_BACKEND_BUILT, st;
     char renderer[16];
 
     (void)nlhs;
@@ -511,15 +511,23 @@ void h_Init(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
         if (r) {
             if (!mxIsChar(r) || mxGetString(r, renderer, sizeof(renderer)) != 0)
                 pnvg_err("psychnanovg:Type",
-                         "Init: opts.renderer must be 'gl3', 'gl2', or 'null'");
+                         "Init: opts.renderer must be '" PNVG_BACKEND_NAME
+                         "', 'auto', or 'null'");
         }
     }
 
     if (strcmp(renderer, "null") == 0)
         backend = PNVG_BACKEND_NULL;
-    else if (strcmp(renderer, "gl2") == 0)
-        backend = PNVG_BACKEND_GL2;
-    else if (strcmp(renderer, "gl3") != 0 && strcmp(renderer, "auto") != 0)
+    else if (strcmp(renderer, "auto") == 0)
+        backend = PNVG_BACKEND_BUILT;
+    else if (strcmp(renderer, PNVG_BACKEND_NAME) == 0)
+        backend = PNVG_BACKEND_BUILT;
+    else if (strcmp(renderer, "gl2") == 0 || strcmp(renderer, "gl3") == 0)
+        pnvg_err("psychnanovg:Usage",
+                 "Init: this build has the %s backend, not %s. The backend is "
+                 "chosen when the library is compiled.",
+                 PNVG_BACKEND_NAME, renderer);
+    else
         pnvg_err("psychnanovg:Usage",
                  "Init: renderer '%s' is not known", renderer);
 
