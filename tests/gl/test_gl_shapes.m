@@ -2,7 +2,8 @@ function test_gl_shapes()
 %TEST_GL_SHAPES  A filled circle and a stroked rectangle, read back (SPEC 11.2).
 %
 %   Needs Psychtoolbox and a GPU. run_tests skips the tests/gl directory
-%   when Screen is missing.
+%   when Screen does not answer. The test uses the convenience layer, so it
+%   writes no Screen('BeginOpenGL') pair of its own.
 
     if isempty(which('Screen'))
         fprintf('   skipped test_gl_shapes: no Screen\n');
@@ -11,16 +12,16 @@ function test_gl_shapes()
 
     w = 640;
     h = 480;
-    [win, ctx] = pnvg_gl_open(w, h);
-    cleanup = onCleanup(@() pnvg_gl_close(win)); %#ok<NASGU>
+    vg = pnvg_gl_open(w, h);
+    cleanup = onCleanup(@() pnvg_gl_close(vg));
 
     cx = 200;
     cy = 200;
     r = 80;
 
-    Screen('FillRect', win, 0);
-    Screen('BeginOpenGL', win);
-    PsychNanoVG('BeginFrame', w, h);
+    Screen('FillRect', vg.win, 0);
+
+    PsychNanoVGFrame('Begin', vg);
     PsychNanoVG('BeginPath');
     PsychNanoVG('Circle', cx, cy, r);
     PsychNanoVG('FillColor', [1 1 1 1]);
@@ -30,11 +31,11 @@ function test_gl_shapes()
     PsychNanoVG('StrokeWidth', 4);
     PsychNanoVG('StrokeColor', [0 1 0 1]);
     PsychNanoVG('Stroke');
-    PsychNanoVG('EndFrame');
-    Screen('EndOpenGL', win);
-    Screen('Flip', win, 0, 1);
+    PsychNanoVGFrame('End', vg);
 
-    img = double(Screen('GetImage', win, [0 0 w h], 'drawBuffer')) / 255;
+    Screen('Flip', vg.win, 0, 1);
+
+    img = double(Screen('GetImage', vg.win, [0 0 w h], 'drawBuffer')) / 255;
 
     inside = mean(mean(img(cy - 20 : cy + 20, cx - 20 : cx + 20, 1)));
     outside = mean(mean(img(cy - 20 : cy + 20, ...
@@ -54,6 +55,10 @@ function test_gl_shapes()
     strokeCol = img(160, 400, 2);
     tst('ok', 'the stroke is green', strokeCol > 0.9);
     tst('ok', 'the rectangle interior is empty', img(160, 480, 2) < 0.05);
+
+    % The convenience layer has to put Psychtoolbox back in 2D mode.
+    [~, isUserspace] = Screen('GetOpenGLDrawMode');
+    tst('eq', 'the frame left 2D mode behind', isUserspace, 0);
 
     PsychNanoVG('Stats', 'reset');
 end

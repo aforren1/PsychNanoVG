@@ -1,27 +1,34 @@
-function PsychNanoVGDemo(screenid)
+function PsychNanoVGDemo(screenid, duration)
 %PSYCHNANOVGDEMO  Vector graphics inside a Psychtoolbox window.
 %
-%   PsychNanoVGDemo            uses the highest numbered screen
+%   PsychNanoVGDemo                      highest screen, six seconds
 %   PsychNanoVGDemo(screenid)
+%   PsychNanoVGDemo(screenid, duration)  duration in seconds
 %
-%   Draws, for about six seconds:
-%     a ring whose edge is a radial gradient rather than an antialiasing
-%     fringe, a Bezier trajectory traced over time, centered text placed
-%     with TextBounds, and the same ring cached in a render target and drawn
-%     100 times through Screen('DrawTexture').
+%   Draws a ring whose edge is a radial gradient rather than an antialiasing
+%   fringe, a Bezier trajectory traced over time, centered text placed with
+%   TextBounds, and the same ring cached in a render target and drawn 100
+%   times through Screen('DrawTexture').
 %
-%   Press any key to stop early.
+%   Press any key to stop early, on a machine where PsychHID loads.
 %
-%   The demo shows the call order of SPEC 4.3: every PsychNanoVG call sits
-%   between Screen('BeginOpenGL') and Screen('EndOpenGL'), and Screen keeps
-%   drawing before and after.
+%   The demo shows the call pattern of SPEC 4.3: PsychNanoVGOpen once,
+%   PsychNanoVGFrame around the drawing of each frame, PsychNanoVGGL around
+%   a setup call that touches OpenGL, and PsychNanoVGClose at the end. No
+%   Screen('BeginOpenGL') pair appears except around the render target,
+%   which needs several subcommands in one region.
+%
+%   See also PsychNanoVGOpen, PsychNanoVGFrame, PsychNanoVGGL, PsychNanoVGClose.
 
     if isempty(which('Screen'))
         error('psychnanovg:Usage', ...
               'PsychNanoVGDemo needs Psychtoolbox. Screen is not on the path.');
     end
-    if nargin < 1
+    if nargin < 1 || isempty(screenid)
         screenid = max(Screen('Screens'));
+    end
+    if nargin < 2 || isempty(duration)
+        duration = 6;
     end
 
     global GL %#ok<GVMIS>
@@ -32,7 +39,7 @@ function PsychNanoVGDemo(screenid)
                      'tests', 'gl'));
     oldSync = Screen('Preference', 'SkipSyncTests');
 
-    win = [];
+    vg = [];
     try
         [win, rect] = ptb_test_window([], [], screenid, 0.15);
         w = RectWidth(rect);
@@ -41,37 +48,39 @@ function PsychNanoVGDemo(screenid)
         cy = h / 2;
         ifi = Screen('GetFlipInterval', win);
 
-        % ---- setup, once, inside a GL context ----
-        Screen('BeginOpenGL', win);
-        PsychNanoVG('Init');
-        fontPath = PsychNanoVG('FindSystemFont', 'Arial');
+        % ---- setup, once ----
+        vg = PsychNanoVGOpen(win);
         font = -1;
-        if ~isempty(fontPath)
-            font = PsychNanoVG('CreateFont', 'sans', fontPath);
+        if isfield(vg.fonts, 'sans')
+            font = vg.fonts.sans;
         end
+
         % The ring never changes, so it is drawn once into a render target
         % and then costs one textured quad per frame instead of a fill.
         cacheSize = 256;
-        [rt, glTex] = PsychNanoVG('RenderTargetCreate', cacheSize, cacheSize);
-        PsychNanoVG('RenderTargetBind', rt);
-        % A new framebuffer texture is not cleared for you.
-        glClearColor(0, 0, 0, 0);
-        glClear(bitor(GL.COLOR_BUFFER_BIT, GL.STENCIL_BUFFER_BIT));
-        PsychNanoVG('BeginFrame', cacheSize, cacheSize);
-        draw_ring(cacheSize / 2, cacheSize / 2, 100, 16);
-        PsychNanoVG('EndFrame');
-        PsychNanoVG('RenderTargetUnbind');
-        Screen('EndOpenGL', win);
-
+        [rt, glTex] = PsychNanoVGGL(vg, 'RenderTargetCreate', ...
+                                    cacheSize, cacheSize);
+        fill_render_target(vg, rt, cacheSize);
         cacheTex = Screen('SetOpenGLTexture', win, [], glTex, ...
                           GL.TEXTURE_2D, cacheSize, cacheSize);
 
-        KbReleaseWait();
+        % A machine without a working PsychHID cannot poll the keyboard.
+        % That is no reason to refuse to draw, so the demo then runs for its
+        % full duration instead.
+        useKb = true;
+        try
+            KbReleaseWait();
+        catch
+            useKb = false;
+            fprintf(['PsychHID does not load here, so a key press ' ...
+                     'cannot stop the demo early.\n']);
+        end
+
         t0 = GetSecs();
         vbl = Screen('Flip', win);
 
-        while GetSecs() - t0 < 6 && ~KbCheck()
-            phase = (GetSecs() - t0) / 6;
+        while GetSecs() - t0 < duration && ~(useKb && KbCheck())
+            phase = (GetSecs() - t0) / duration;
 
             % ---- Screen draws first ----
             Screen('FillRect', win, 0.15);
@@ -79,12 +88,9 @@ function PsychNanoVGDemo(screenid)
                    20, 20, [0.6 0.6 0.6]);
 
             % ---- NanoVG ----
-            Screen('BeginOpenGL', win);
-            PsychNanoVG('BeginFrame', w, h);
-
+            PsychNanoVGFrame('Begin', vg);
             draw_ring(cx, cy, 140, 24);
             draw_trajectory(cx, cy, phase);
-
             if font >= 0
                 PsychNanoVG('FontFaceId', font);
                 PsychNanoVG('FontSize', 32);
@@ -93,9 +99,7 @@ function PsychNanoVGDemo(screenid)
                 PsychNanoVG('FillColor', [1 1 1 0.9]);
                 PsychNanoVG('Text', cx - tw / 2, cy + 220, 'fixate');
             end
-
-            PsychNanoVG('EndFrame');
-            Screen('EndOpenGL', win);
+            PsychNanoVGFrame('End', vg);
 
             % ---- the cached ring, 100 copies, at no NanoVG cost ----
             for k = 1:100
@@ -113,18 +117,11 @@ function PsychNanoVGDemo(screenid)
                 s.endFrameSumNs / max(s.frames, 1) / 1e6, ...
                 s.endFrameMaxNs / 1e6, s.frames);
 
-        Screen('BeginOpenGL', win);
-        PsychNanoVG('RenderTargetDelete', rt);
-        PsychNanoVG('Shutdown');
-        Screen('EndOpenGL', win);
+        PsychNanoVGGL(vg, 'RenderTargetDelete', rt);
+        PsychNanoVGClose(vg);
     catch err
-        if ~isempty(win)
-            try
-                Screen('BeginOpenGL', win);
-                PsychNanoVG('Shutdown');
-                Screen('EndOpenGL', win);
-            catch
-            end
+        if ~isempty(vg)
+            PsychNanoVGClose(vg);
         end
         sca;
         Screen('Preference', 'SkipSyncTests', oldSync);
@@ -136,6 +133,28 @@ function PsychNanoVGDemo(screenid)
 end
 
 % ---------------------------------------------------------------------------
+
+function fill_render_target(vg, rt, sz)
+% Bind, clear, draw, and unbind have to share one OpenGL region, because
+% Screen('EndOpenGL') resets the framebuffer binding. PsychNanoVGGL wraps
+% one subcommand, so this is the one place that opens a region by hand.
+    global GL %#ok<GVMIS>
+    Screen('BeginOpenGL', vg.win);
+    try
+        PsychNanoVG('RenderTargetBind', rt);
+        % A new framebuffer texture is not cleared for you.
+        glClearColor(0, 0, 0, 0);
+        glClear(bitor(GL.COLOR_BUFFER_BIT, GL.STENCIL_BUFFER_BIT));
+        PsychNanoVG('BeginFrame', sz, sz);
+        draw_ring(sz / 2, sz / 2, 100, 16);
+        PsychNanoVG('EndFrame');
+        PsychNanoVG('RenderTargetUnbind');
+    catch err
+        Screen('EndOpenGL', vg.win);
+        rethrow(err);
+    end
+    Screen('EndOpenGL', vg.win);
+end
 
 function draw_ring(cx, cy, r, edge)
 % A gradient ring rather than a stroked circle: SPEC 6.2 warns that the
@@ -159,9 +178,6 @@ function draw_trajectory(cx, cy, phase)
     t = linspace(0, phase, n)';
     x = cx + 260 * sin(2 * pi * t) .* cos(pi * t);
     y = cy + 180 * sin(4 * pi * t);
-    if n < 2
-        return;
-    end
     cmds = [2 * ones(n, 1), x, y, zeros(n, 4)];
     cmds(1, 1) = 1;   % 1 = MoveTo, 2 = LineTo
     PsychNanoVG('BeginPath');

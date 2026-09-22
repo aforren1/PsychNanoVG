@@ -22,6 +22,7 @@ function s = PsychNanoVGPerf(mode)
     PsychNanoVGSetup();
 
     isGL = strcmpi(mode, 'gl');
+    vg = [];
     if isGL
         if isempty(which('Screen'))
             error('psychnanovg:Usage', 'gl mode needs Psychtoolbox');
@@ -31,14 +32,18 @@ function s = PsychNanoVGPerf(mode)
         [win, rect] = ptb_test_window(640, 480);
         w = RectWidth(rect);
         h = RectHeight(rect);
+        vg = PsychNanoVGOpen(win);
+        % The timed loops call BeginFrame and EndFrame many times inside one
+        % OpenGL region, so the region is opened once here rather than per
+        % frame. PsychNanoVGFrame is what a script uses; this file measures
+        % the MEX, so it keeps the region out of the measurement.
         Screen('BeginOpenGL', win);
-        PsychNanoVG('Init');
     else
         w = 640;
         h = 480;
         PsychNanoVG('Init', struct('renderer', 'null'));
     end
-    cleanup = onCleanup(@() cleanup_all(isGL));
+    cleanup = onCleanup(@() cleanup_all(isGL, vg));
 
     n = 1000;
     reps = 200;
@@ -168,16 +173,21 @@ function loop_polyline(xy)
     PsychNanoVG('Polyline', xy);
 end
 
-function cleanup_all(isGL)
-    try
-        PsychNanoVG('Shutdown');
-    catch
-    end
+function cleanup_all(isGL, vg)
     if isGL
         try
-            Screen('EndOpenGL', max(Screen('Windows')));
+            Screen('EndOpenGL', vg.win);
+        catch
+        end
+        try
+            PsychNanoVGClose(vg);
         catch
         end
         sca;
+    else
+        try
+            PsychNanoVG('Shutdown');
+        catch
+        end
     end
 end

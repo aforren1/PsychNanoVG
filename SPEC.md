@@ -140,6 +140,44 @@ From upstream `src/nanovg.h` and `src/nanovg_gl.h`:
 
 ### 4.3 Required call order
 
+The convenience layer of section 5.4 opens and closes the OpenGL region, so
+a script writes no `Screen('BeginOpenGL')` and `Screen('EndOpenGL')` pair of
+its own.
+
+```matlab
+% Setup, once
+InitializeMatlabOpenGL(1);                                   % before OpenWindow
+[win, rect] = PsychImaging('OpenWindow', screenid, 0);
+vg = PsychNanoVGOpen(win);                                   % Init, plus a default sans font
+cleanup = onCleanup(@() PsychNanoVGClose(vg));
+
+% Every frame
+Screen('FillRect', win, 128);                                % PTB drawing first
+PsychNanoVGFrame('Begin', vg);                               % BeginOpenGL, then BeginFrame
+PsychNanoVG('BeginPath');
+PsychNanoVG('Circle', cx, cy, 100);
+PsychNanoVG('FillColor', [1 1 1 1]);
+PsychNanoVG('Fill');
+PsychNanoVG('StrokeWidth', 3);
+PsychNanoVG('StrokeColor', [0 0 0 1]);
+PsychNanoVG('Stroke');
+PsychNanoVG('FontFaceId', vg.fonts.sans); PsychNanoVG('FontSize', 24);
+PsychNanoVG('Text', cx, cy + 140, 'fixate');
+PsychNanoVGFrame('End', vg);                                 % EndFrame, then EndOpenGL
+Screen('DrawText', win, 'PTB text still works', 10, 10);     % more PTB drawing
+Screen('Flip', win);
+
+% A setup call that touches OpenGL, outside a frame
+font = PsychNanoVGGL(vg, 'CreateFont', 'mono', fontPath);
+
+% Teardown, once
+PsychNanoVGClose(vg);
+sca;
+```
+
+The helpers are thin. This is the same frame written out, and it is what the
+helpers do:
+
 ```matlab
 % Setup, once
 InitializeMatlabOpenGL(1);
@@ -150,21 +188,15 @@ font = PsychNanoVG('CreateFont', 'sans', PsychNanoVG('FindSystemFont', 'Arial'))
 Screen('EndOpenGL', win);
 
 % Every frame
-Screen('FillRect', win, 128);                                % PTB drawing first
+Screen('FillRect', win, 128);
 Screen('BeginOpenGL', win);
 PsychNanoVG('BeginFrame', RectWidth(rect), RectHeight(rect));
 PsychNanoVG('BeginPath');
 PsychNanoVG('Circle', cx, cy, 100);
 PsychNanoVG('FillColor', [1 1 1 1]);
 PsychNanoVG('Fill');
-PsychNanoVG('StrokeWidth', 3);
-PsychNanoVG('StrokeColor', [0 0 0 1]);
-PsychNanoVG('Stroke');
-PsychNanoVG('FontFaceId', font); PsychNanoVG('FontSize', 24);
-PsychNanoVG('Text', cx, cy + 140, 'fixate');
 PsychNanoVG('EndFrame');                                     % GL work happens here, then error drain
 Screen('EndOpenGL', win);
-Screen('DrawText', win, 'PTB text still works', 10, 10);     % more PTB drawing
 Screen('Flip', win);
 
 % Teardown, once
@@ -173,6 +205,11 @@ PsychNanoVG('Shutdown');
 Screen('EndOpenGL', win);
 sca;
 ```
+
+Use the raw form when several subcommands have to share one region. A render
+target is the case that needs it: `RenderTargetBind`, the `glClear`, the
+frame, and `RenderTargetUnbind` all belong together, because
+`Screen('EndOpenGL')` resets the framebuffer binding.
 
 ### 4.4 Rules
 
@@ -251,8 +288,18 @@ Grouped as in `nanovg.h`:
 |---|---|
 | `m/PsychNanoVG.m` | Help text only. Generated. |
 | `m/PsychNanoVGOp.m` | Generated opcode constants. |
+| `m/PsychNanoVGSetup.m` | Puts `dist/<arch>` and `m/` on the path, in that order. |
+| `m/PsychNanoVGOpen.m` | `vg = PsychNanoVGOpen(win [, opts])`. Checks that 3D graphics are on, then `Init` inside one OpenGL region, and loads a default sans font. Returns a struct with `win`, `rect`, `opened`, and `fonts`. |
+| `m/PsychNanoVGFrame.m` | `PsychNanoVGFrame('Begin', vg [, w, h])` and `('End', vg)`. The frame and the OpenGL region together. The default size is the window rect. |
+| `m/PsychNanoVGGL.m` | `[...] = PsychNanoVGGL(vg, subcommand, ...)`. One OpenGL subcommand inside one region. Passes through when a region is already open. |
+| `m/PsychNanoVGClose.m` | `PsychNanoVGClose(vg)`. `Shutdown` inside one region. Safe twice, and safe after the window is closed. |
 | `m/PsychNanoVGFonts.m` | `FindSystemFont` implementation per OS. |
 | `m/PsychNanoVGDemo.m` | Demo: antialiased ring stimulus with gradient edge, a Bezier trajectory, text with metrics, and a cached render target. |
+
+Every one of the four uses `Screen('EndOpenGL')` on the error path as well as
+on the normal path. A MEX error inside a wrapped region therefore still
+leaves Psychtoolbox in 2D drawing mode, which is what keeps the next `Screen`
+command correct.
 
 ### 5.5 Error identifiers
 
@@ -609,6 +656,7 @@ that need no GL and compiling the GL code without running it.
 | `tests/smoke_gl.c` includes the platform GL header rather than glad, and gained a GLX branch beside the WGL one. | The GLX declarations come from `GL/glx.h`, which includes `GL/gl.h`, and glad refuses to share a translation unit with it. Everything the test calls itself is GL 1.1, so the platform header is enough; the modern GL stays behind the core layer and its glad loader. |
 | The build and install directories carry a platform suffix outside Windows, for example `build-octave-linux`. Section 10.2 names only `build-matlab/` and `build-octave/`. | One working tree is often shared between Windows and WSL. CMake refuses to configure a directory that another toolchain already used. |
 | The MEX goes to `dist/<arch>/PsychNanoVG.<mexext>`, not to `dist/`. Section 10.2 says only `dist/PsychNanoVG.<mexext>`. | Octave names its MEX `PsychNanoVG.mex` on every operating system, so in a tree shared between Windows and WSL the second build replaced the first. The split also lets one tree hold every platform at once, which is what the CI artifacts carry. `m/PsychNanoVGSetup.m` owns the platform name and the path order, so nothing else has to know the layout, and it raises `psychnanovg:NotBuilt` naming the file it looked for. Octave's `computer('arch')` reports a GNU triplet rather than MATLAB's name, so the helper derives `win64`, `glnxa64`, `maci64`, or `maca64` itself. |
+| Five M-files sit between a script and the MEX: `PsychNanoVGSetup`, `PsychNanoVGOpen`, `PsychNanoVGFrame`, `PsychNanoVGGL`, and `PsychNanoVGClose`. Section 5.4 lists only the help text, the opcodes, the font search, and the demo, and section 4.3 had the script write every `Screen('BeginOpenGL')` pair itself. | An unbalanced pair leaves Psychtoolbox in userspace rendering mode, and every later `Screen` drawing command then goes to the wrong place. A script cannot get that wrong if it never writes the pair. The helpers also give the three sibling projects one shape to share. The raw form stays documented, because several subcommands in one region, such as a render target, still need it. `PsychNanoVGOpen` adds one identifier to section 5.5, `psychnanovg:No3DGraphics`, for a window that was opened without `InitializeMatlabOpenGL`. |
 | `FindSystemFont` walks three directory levels, not one. | The Linux layout is `/usr/share/fonts/truetype/<family>/<file>.ttf`, which is two levels below the root that section 6.3 lists. With one level the search found nothing on Ubuntu. `dir('**')` is a MATLAB extension that Octave does not have, so the walk is explicit and depth limited. |
 
 ### 14.5 Native GL smoke test

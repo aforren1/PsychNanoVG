@@ -14,43 +14,52 @@ function test_gl_target()
     global GL %#ok<GVMIS>
     w = 256;
     h = 256;
-    [win, ~] = pnvg_gl_open(w, h);
-    cleanup = onCleanup(@() pnvg_gl_close(win)); %#ok<NASGU>
+    vg = pnvg_gl_open(w, h);
+    cleanup = onCleanup(@() pnvg_gl_close(vg));
 
     % ---- direct ----
-    Screen('FillRect', win, 0);
-    Screen('BeginOpenGL', win);
-    PsychNanoVG('BeginFrame', w, h);
+    Screen('FillRect', vg.win, 0);
+    PsychNanoVGFrame('Begin', vg);
     draw_marker();
-    PsychNanoVG('EndFrame');
-    Screen('EndOpenGL', win);
-    Screen('Flip', win, 0, 1);
-    direct = double(Screen('GetImage', win, [0 0 w h], 'drawBuffer')) / 255;
+    PsychNanoVGFrame('End', vg);
+    Screen('Flip', vg.win, 0, 1);
+    direct = double(Screen('GetImage', vg.win, [0 0 w h], 'drawBuffer')) / 255;
 
     % ---- through a render target ----
-    Screen('FillRect', win, 0);
-    Screen('BeginOpenGL', win);
-    [rt, glTex] = PsychNanoVG('RenderTargetCreate', w, h);
+    Screen('FillRect', vg.win, 0);
+
+    [rt, glTex] = PsychNanoVGGL(vg, 'RenderTargetCreate', w, h);
     tst('ok', 'RenderTargetCreate returned a handle', rt > 0);
     tst('ok', 'RenderTargetCreate returned a GL texture id', glTex > 0);
     tst('ok', 'RenderTargetImage is a live image', ...
-        PsychNanoVG('RenderTargetImage', rt) > 0);
+        PsychNanoVGGL(vg, 'RenderTargetImage', rt) > 0);
 
-    PsychNanoVG('RenderTargetBind', rt);
-    % A new framebuffer texture holds whatever was in that memory, and
-    % nvgluCreateFramebuffer does not clear it. The caller clears it.
-    glClearColor(0, 0, 0, 1);
-    glClear(bitor(GL.COLOR_BUFFER_BIT, GL.STENCIL_BUFFER_BIT));
-    PsychNanoVG('BeginFrame', w, h);
-    draw_marker();
-    PsychNanoVG('EndFrame');
-    PsychNanoVG('RenderTargetUnbind');
-    Screen('EndOpenGL', win);
+    % A render target needs bind, clear, draw, and unbind in one OpenGL
+    % region, because Screen('EndOpenGL') resets the framebuffer binding.
+    % PsychNanoVGGL wraps one subcommand, so this sequence opens the region
+    % itself. Every call inside could still go through PsychNanoVGGL, which
+    % passes through while a region is open.
+    Screen('BeginOpenGL', vg.win);
+    try
+        PsychNanoVG('RenderTargetBind', rt);
+        % A new framebuffer texture holds whatever was in that memory, and
+        % nvgluCreateFramebuffer does not clear it. The caller clears it.
+        glClearColor(0, 0, 0, 1);
+        glClear(bitor(GL.COLOR_BUFFER_BIT, GL.STENCIL_BUFFER_BIT));
+        PsychNanoVG('BeginFrame', w, h);
+        draw_marker();
+        PsychNanoVG('EndFrame');
+        PsychNanoVG('RenderTargetUnbind');
+    catch err
+        Screen('EndOpenGL', vg.win);
+        rethrow(err);
+    end
+    Screen('EndOpenGL', vg.win);
 
-    tex = Screen('SetOpenGLTexture', win, [], glTex, GL.TEXTURE_2D, w, h);
-    Screen('DrawTexture', win, tex, [], [0 0 w h]);
-    Screen('Flip', win, 0, 1);
-    viaTarget = double(Screen('GetImage', win, [0 0 w h], 'drawBuffer')) / 255;
+    tex = Screen('SetOpenGLTexture', vg.win, [], glTex, GL.TEXTURE_2D, w, h);
+    Screen('DrawTexture', vg.win, tex, [], [0 0 w h]);
+    Screen('Flip', vg.win, 0, 1);
+    viaTarget = double(Screen('GetImage', vg.win, [0 0 w h], 'drawBuffer')) / 255;
 
     d = abs(direct(:, :, 1) - viaTarget(:, :, 1));
     tst('ok', 'the render target matches direct drawing', mean(d(:)) < 0.02);
@@ -61,11 +70,12 @@ function test_gl_target()
     tst('near', 'the render target is not flipped in y', topTarget, ...
         topDirect, 0.02);
 
-    Screen('BeginOpenGL', win);
-    PsychNanoVG('RenderTargetDelete', rt);
+    PsychNanoVGGL(vg, 'RenderTargetDelete', rt);
     tst('throws', 'a deleted render target is gone', 'psychnanovg:Handle', ...
-        @() PsychNanoVG('RenderTargetImage', rt));
-    Screen('EndOpenGL', win);
+        @() PsychNanoVGGL(vg, 'RenderTargetImage', rt));
+
+    [~, isUserspace] = Screen('GetOpenGLDrawMode');
+    tst('eq', 'the test left 2D mode behind', isUserspace, 0);
 end
 
 function draw_marker()

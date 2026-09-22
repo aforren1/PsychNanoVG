@@ -8,9 +8,12 @@ function test_gl_text()
 
     w = 640;
     h = 480;
-    [win, ~] = pnvg_gl_open(w, h);
-    cleanup = onCleanup(@() pnvg_gl_close(win)); %#ok<NASGU>
+    vg = pnvg_gl_open(w, h);
+    cleanup = onCleanup(@() pnvg_gl_close(vg));
 
+    % PsychNanoVGOpen loads a default sans font already. The test loads one
+    % of its own through PsychNanoVGGL, which is the call that a setup
+    % script makes for a second face.
     path = PsychNanoVG('FindSystemFont', 'Arial');
     if isempty(path)
         path = PsychNanoVG('FindSystemFont', 'DejaVuSans');
@@ -19,13 +22,14 @@ function test_gl_text()
     if isempty(path)
         return;
     end
+    tst('ok', 'Open loaded a default sans font', isfield(vg.fonts, 'sans'));
 
-    Screen('FillRect', win, 0);
-    Screen('BeginOpenGL', win);
-    font = PsychNanoVG('CreateFont', 'sans', path);
+    font = PsychNanoVGGL(vg, 'CreateFont', 'test', path);
     tst('ok', 'CreateFont returned a handle', font >= 0);
 
-    PsychNanoVG('BeginFrame', w, h);
+    Screen('FillRect', vg.win, 0);
+
+    PsychNanoVGFrame('Begin', vg);
     PsychNanoVG('FontFaceId', font);
     PsychNanoVG('FontSize', 48);
     PsychNanoVG('TextAlign', 'ALIGN_LEFT|ALIGN_TOP');
@@ -45,11 +49,11 @@ function test_gl_text()
 
     PsychNanoVG('FillColor', [1 1 1 1]);
     PsychNanoVG('Text', x0, y0, str);
-    PsychNanoVG('EndFrame');
-    Screen('EndOpenGL', win);
-    Screen('Flip', win, 0, 1);
+    PsychNanoVGFrame('End', vg);
 
-    img = double(Screen('GetImage', win, [0 0 w h], 'drawBuffer')) / 255;
+    Screen('Flip', vg.win, 0, 1);
+
+    img = double(Screen('GetImage', vg.win, [0 0 w h], 'drawBuffer')) / 255;
     % A low threshold so the faint edge of the antialiasing counts as ink.
     lit = img(:, :, 1) > 0.02;
     cols = find(any(lit, 1));
@@ -69,8 +73,7 @@ function test_gl_text()
     tst('near', 'TextBounds bottom edge', ink(4), bounds(4), 5);
 
     % Glyph positions and line breaking come from the same layout.
-    Screen('BeginOpenGL', win);
-    PsychNanoVG('BeginFrame', w, h);
+    PsychNanoVGFrame('Begin', vg);
     PsychNanoVG('FontFaceId', font);
     PsychNanoVG('FontSize', 48);
     [n, pos] = PsychNanoVG('TextGlyphPositions', x0, y0, str);
@@ -82,6 +85,5 @@ function test_gl_text()
     tst('ok', 'TextBreakLines returned rows', nr > 1);
     tst('ok', 'each row has text', all(cellfun(@(t) ~isempty(t), ...
                                                {rowsOut.text})));
-    PsychNanoVG('CancelFrame');
-    Screen('EndOpenGL', win);
+    PsychNanoVGFrame('End', vg);
 end

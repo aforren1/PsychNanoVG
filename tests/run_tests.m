@@ -31,7 +31,7 @@ function run_tests()
     end
 
     suites = {'test_dispatch', 'test_gen_marshal', 'test_paths', ...
-              'test_transforms'};
+              'test_transforms', 'test_helpers'};
     for k = 1:numel(suites)
         fprintf('-- %s\n', suites{k});
         before = TST_FAIL;

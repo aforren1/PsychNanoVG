@@ -105,7 +105,10 @@ for this platform is missing.
 `run_tests` calls `PsychNanoVGSetup` itself, so no other path setup is needed.
 
 The tests in `tests/` need no GPU. They use the null renderer: a NanoVG
-context whose backend callbacks do nothing. Path building, the state stack,
+context whose backend callbacks do nothing. `test_helpers` also puts a
+recording `Screen` stub from `tests/stub/` on the path for its own duration,
+so the convenience layer is checked without Psychtoolbox: the region opens
+once, closes once, and closes again on an error. Path building, the state stack,
 text layout, the handle tables, and all of the marshaling run for real. Only
 the OpenGL calls are absent.
 
@@ -159,43 +162,100 @@ before and after the change.
 
 ## Use
 
-Every subcommand must run between `Screen('BeginOpenGL')` and
-`Screen('EndOpenGL')`.
+Four M-files stand between a script and the MEX, so a script never writes a
+`Screen('BeginOpenGL')` and `Screen('EndOpenGL')` pair.
+
+| Helper | What it does |
+|---|---|
+| `vg = PsychNanoVGOpen(win [, opts])` | Creates the context for an open window and loads a default sans font. Returns the handle struct. |
+| `PsychNanoVGFrame('Begin', vg [, w, h])` | Enters the OpenGL region and starts the frame. |
+| `PsychNanoVGFrame('End', vg)` | Finishes the frame and leaves the region. |
+| `PsychNanoVGGL(vg, subcommand, ...)` | Runs one OpenGL subcommand, such as `CreateFont`, inside its own region. |
+| `PsychNanoVGClose(vg)` | Deletes the context. Safe twice, and safe after the window is closed. |
+
+Between `Begin` and `End`, draw with plain `PsychNanoVG` calls.
 
 ```matlab
-InitializeMatlabOpenGL(1);
+InitializeMatlabOpenGL(1);                     % before OpenWindow
 [win, rect] = PsychImaging('OpenWindow', screenid, 0);
 
+vg = PsychNanoVGOpen(win);
+cleanup = onCleanup(@() PsychNanoVGClose(vg));
+
+% every frame
+Screen('FillRect', win, 128);
+PsychNanoVGFrame('Begin', vg);
+PsychNanoVG('BeginPath');
+PsychNanoVG('Circle', cx, cy, 100);
+PsychNanoVG('FillColor', [1 1 1 1]);
+PsychNanoVG('Fill');
+PsychNanoVG('FontFaceId', vg.fonts.sans);
+PsychNanoVG('FontSize', 24);
+PsychNanoVG('Text', cx, cy + 140, 'fixate');
+PsychNanoVGFrame('End', vg);
+Screen('DrawText', win, 'Screen still works', 10, 10);
+Screen('Flip', win);
+```
+
+`vg.fonts.sans` is the default font. It is absent when no system font was
+found, so test with `isfield(vg.fonts, 'sans')` on an unknown machine.
+
+Each helper calls `Screen('EndOpenGL')` on the error path as well, so a MEX
+error inside a wrapped region still leaves Psychtoolbox in 2D drawing mode.
+
+`PsychNanoVGOpen` refuses a window that was opened without
+`InitializeMatlabOpenGL`, with `psychnanovg:No3DGraphics`, rather than let
+`Screen('BeginOpenGL')` fail later for a reason that is harder to read.
+
+`PsychNanoVGDemo` shows more: a gradient ring, a Bezier trajectory, text
+placed with `TextBounds`, and a cached render target.
+
+### The low-level form
+
+The helpers are thin. Every subcommand must run between
+`Screen('BeginOpenGL')` and `Screen('EndOpenGL')`, and you can write that
+yourself:
+
+```matlab
 Screen('BeginOpenGL', win);
 PsychNanoVG('Init');
 font = PsychNanoVG('CreateFont', 'sans', ...
                    PsychNanoVG('FindSystemFont', 'Arial'));
 Screen('EndOpenGL', win);
 
-% every frame
-Screen('FillRect', win, 128);
 Screen('BeginOpenGL', win);
 PsychNanoVG('BeginFrame', RectWidth(rect), RectHeight(rect));
 PsychNanoVG('BeginPath');
 PsychNanoVG('Circle', cx, cy, 100);
 PsychNanoVG('FillColor', [1 1 1 1]);
 PsychNanoVG('Fill');
-PsychNanoVG('FontFaceId', font);
-PsychNanoVG('FontSize', 24);
-PsychNanoVG('Text', cx, cy + 140, 'fixate');
 PsychNanoVG('EndFrame');
 Screen('EndOpenGL', win);
-Screen('Flip', win);
 
-% at the end
 Screen('BeginOpenGL', win);
 PsychNanoVG('Shutdown');
 Screen('EndOpenGL', win);
-sca;
 ```
 
-`PsychNanoVGDemo` shows more: a gradient ring, a Bezier trajectory, text
-placed with `TextBounds`, and a cached render target.
+Use this form when several subcommands have to share one region. A render
+target is the case that needs it, because `Screen('EndOpenGL')` resets the
+framebuffer binding:
+
+```matlab
+[rt, glTex] = PsychNanoVGGL(vg, 'RenderTargetCreate', 256, 256);
+Screen('BeginOpenGL', vg.win);
+PsychNanoVG('RenderTargetBind', rt);
+glClearColor(0, 0, 0, 0);
+glClear(bitor(GL.COLOR_BUFFER_BIT, GL.STENCIL_BUFFER_BIT));
+PsychNanoVG('BeginFrame', 256, 256);
+% draw
+PsychNanoVG('EndFrame');
+PsychNanoVG('RenderTargetUnbind');
+Screen('EndOpenGL', vg.win);
+```
+
+`PsychNanoVGGL` passes through while a region is open, so the calls inside
+can still be written through it.
 
 ### Find a subcommand
 
@@ -293,7 +353,7 @@ text.
 | `src/pnvg_targets.c` | Render targets and `CreateImageFromTexture`. |
 | `src/gen_dispatch.c`, `src/gen_enums.c` | Generated. Committed. |
 | `gen/generate.py` | The generator. Run it with `build gen`. |
-| `m/` | Help text, opcodes, the path setup, the font search, the demo. |
+| `m/` | The convenience layer, help text, opcodes, the path setup, the font search, the demo. |
 | `tests/` | The suite that needs no GPU, plus `tests/gl/` and `smoke_gl.c`. |
 | `perf/` | The timings of SPEC 9.4. |
 
