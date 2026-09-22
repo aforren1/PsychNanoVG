@@ -1,8 +1,8 @@
-# psychnanovg specification
+# PsychNanoVG specification
 
 Status: specification, no code yet. Version 0.1, 2026-09-22.
 
-`psychnanovg` is a MEX binding of NanoVG for MATLAB and GNU Octave. NanoVG is a
+`PsychNanoVG` is a MEX binding of NanoVG for MATLAB and GNU Octave. NanoVG is a
 small antialiased 2D vector graphics library on OpenGL. The binding draws
 paths, gradients, images, and TrueType text into a Psychtoolbox (PTB) onscreen
 window, inside PTB's userspace OpenGL context.
@@ -17,7 +17,7 @@ section 4 explain the design. The other sections are reference material.
 PTB's `Screen` drawing commands cover rectangles, ovals, lines, polygons, and
 text. They do not cover Bezier paths, stroke joins and caps, gradients, image
 patterns, or TrueType text with exact glyph metrics. NanoVG provides these with
-GPU antialiasing. `psychnanovg` exposes the NanoVG API to experiment scripts
+GPU antialiasing. `PsychNanoVG` exposes the NanoVG API to experiment scripts
 with the same call pattern as `Screen`.
 
 Typical uses: smooth stimulus outlines, rings and arcs with controlled edge
@@ -62,7 +62,7 @@ MATLAB / Octave script
   |  PsychNanoVG('BeginFrame', w, h)  PsychNanoVG('Polyline', xy)  PsychNanoVG('Stroke')  PsychNanoVG('EndFrame')
   v
 +--------------------------------------------------------------+
-| psychnanovg MEX (C99)                                        |
+| PsychNanoVG MEX (C99)                                        |
 |  dispatch:  sorted name table + opcode fast path             |
 |  marshal:   mxArray <-> float, NVGcolor, NVGpaint handles    |
 |  batch:     Polyline, Polygon, Path (matrix forms)           |

@@ -1,10 +1,10 @@
-# psychnanovg
+# PsychNanoVG
 
-`psychnanovg` draws antialiased 2D vector graphics in a Psychtoolbox (PTB)
+`PsychNanoVG` draws antialiased 2D vector graphics in a Psychtoolbox (PTB)
 window, from MATLAB and from GNU Octave. It is a MEX binding of
 [NanoVG](https://github.com/memononen/nanovg).
 
-`Screen` draws rectangles, ovals, lines, polygons, and text. `psychnanovg`
+`Screen` draws rectangles, ovals, lines, polygons, and text. `PsychNanoVG`
 adds Bezier paths, stroke joins and caps, gradients, image patterns, and
 TrueType text with exact glyph metrics. The GPU does the antialiasing. The
 MEX draws into the same framebuffer as `Screen`, so you can mix the two in
@@ -43,7 +43,7 @@ See the last section of `SPEC.md` for the full list of deviations.
 
 Clone the repository with its submodules:
 
-    git clone --recurse-submodules <repo-url> PsychNanoVG
+    git clone --recurse-submodules https://github.com/aforren1/PsychNanoVG.git
     cd PsychNanoVG
 
 NanoVG is a submodule. If the clone above was made without
@@ -138,7 +138,7 @@ step runs at the repository root.
 | `matlab-test-forward` | Downloads that exact binary and tests it on the latest MATLAB, on Linux and on Windows. No rebuild. |
 | `octave-build` | Builds and tests in the `gnuoctave/octave` Docker images for 6.4.0 and 10.1.0, one per binary compatible era. Uploads both packages. |
 | `octave-test-forward` | Tests the 6.4 binary on Octave 7.3 and 9.4, and the 10.1 binary on 10.3 and 11.3. No rebuild. |
-| `octave-windows` | Builds and tests under MSYS2 with `MEX_CMAKE_GENERATOR=Ninja`. Uploads the package. |
+| `octave-windows` | Builds and tests with the official GNU Octave Windows zip (10.1.0, cached), using the toolchain and `make` it ships, as on a developer machine. Uploads the package. |
 | `smoke-gl-linux` | Builds `smoke_gl` and runs it under `xvfb-run` with Mesa llvmpipe. This is the only automated OpenGL coverage. |
 | `smoke-gl-windows-compile` | Compiles `smoke_gl` with MSVC. The hosted Windows runner has no GPU, so it is not run. |
 | `release` | On a `v*` tag, zips every package and publishes a GitHub Release with `gh release create`. |

@@ -221,31 +221,45 @@ jobs:
           octave --no-gui --eval "addpath('tests'); run_tests"
           EOF
 
-  # MSYS2 is rolling, so there is no old Octave to pin here: build, test, and
-  # ship the current one.
+  # Octave on Windows comes from the official GNU Octave zip, pinned by
+  # OCTAVE_VERSION below: build, test, and ship that one.
   octave-windows:
-    name: build · windows · Octave (MSYS2)
+    name: build · windows · Octave (official zip)
     runs-on: windows-latest
+    # MSYS2 no longer packages Octave (mingw-w64-x86_64-octave was removed), so
+    # this job uses the official GNU Octave Windows zip. It ships the same MinGW
+    # toolchain, mkoctfile, and make as an installed Octave, so build.m runs
+    # exactly as on a developer machine. The extracted tree is cached because the
+    # zip is about 800 MB.
+    env:
+      OCTAVE_VERSION: 10.1.0
     defaults:
       run:
-        shell: msys2 {0}
+        shell: bash
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-
-      - name: Set up MSYS2
-        uses: msys2/setup-msys2@v2
+      - name: Cache the Octave distribution
+        id: octave-cache
+        uses: actions/cache@v4
         with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            git
-            mingw-w64-x86_64-octave
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-
+          path: C:\octave
+          key: octave-${{ env.OCTAVE_VERSION }}-w64
+      - name: Download and unpack Octave ${{ env.OCTAVE_VERSION }} for Windows
+        if: steps.octave-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "octave.zip"
+          Invoke-WebRequest -Uri "https://ftp.gnu.org/gnu/octave/windows/octave-$env:OCTAVE_VERSION-w64.zip" -OutFile $zip
+          New-Item -ItemType Directory -Force C:\octave | Out-Null
+          tar -xf $zip -C C:\octave
+      - name: Put Octave on PATH
+        shell: pwsh
+        run: |
+          $root = (Get-ChildItem C:\octave -Directory | Select-Object -First 1).FullName
+          "$root\mingw64\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          & "$root\mingw64\bin\octave-cli.exe" --version | Select-Object -First 1
       - name: Fetch NanoVG at the pinned commit
         run: |
           if [ ! -f third_party/nanovg/src/nanovg.h ]; then
@@ -256,13 +270,9 @@ jobs:
           fi
 
       - name: Build and test
-        env:
-          # CMake's "MinGW Makefiles" generator refuses to run while sh.exe is
-          # on PATH, and MSYS2 always puts it there.
-          MEX_CMAKE_GENERATOR: Ninja
         run: |
-          octave --no-gui --eval "build"
-          octave --no-gui --eval "addpath('tests'); run_tests"
+          octave-cli --eval "build"
+          octave-cli --eval "addpath('tests'); run_tests"
 
       - name: Upload package
         uses: actions/upload-artifact@v7
