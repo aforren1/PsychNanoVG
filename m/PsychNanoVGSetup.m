@@ -44,7 +44,12 @@ function out = PsychNanoVGSetup(cmd)
                   'PsychNanoVGSetup: no option "%s"', cmd);
     end
 
-    addpath(distdir, here);
+    % Only touch the path when it is not already right. PsychNanoVGOpen calls
+    % this on every open, and rewriting the load path while the MEX file is
+    % loaded makes the interpreter rebuild its function cache for no reason.
+    if ~path_is_ready(distdir, here)
+        addpath(distdir, here);
+    end
 
     if strcmpi(cmd, 'add')
         f = fullfile(distdir, ['PsychNanoVG.' mexext()]);
@@ -62,6 +67,16 @@ function out = PsychNanoVGSetup(cmd)
 end
 
 % ---------------------------------------------------------------------------
+
+function tf = path_is_ready(distdir, mdir)
+% True when both directories are on the path and dist comes first. A MEX file
+% only takes precedence over an M-file of the same name inside one directory,
+% so the order is what makes PsychNanoVG resolve to the MEX.
+    parts = strsplit(path(), pathsep);
+    di = find(strcmp(parts, distdir), 1);
+    mi = find(strcmp(parts, mdir), 1);
+    tf = ~isempty(di) && ~isempty(mi) && di < mi;
+end
 
 function a = pnvg_arch()
 % The MATLAB names for the platform, used for the dist layout on both

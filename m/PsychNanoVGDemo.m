@@ -12,6 +12,9 @@ function PsychNanoVGDemo(screenid, duration)
 %
 %   Press any key to stop early, on a machine where PsychHID loads.
 %
+%   Colors are 0 to 1 throughout, for Screen as well as for NanoVG, because
+%   the demo calls PsychDefaultSetup(2) before it opens the window.
+%
 %   The demo shows the call pattern of SPEC 4.3: PsychNanoVGOpen once,
 %   PsychNanoVGFrame around the drawing of each frame, PsychNanoVGGL around
 %   a setup call that touches OpenGL, and PsychNanoVGClose at the end. No
@@ -38,6 +41,13 @@ function PsychNanoVGDemo(screenid, duration)
     addpath(fullfile(fileparts(fileparts(mfilename('fullpath'))), ...
                      'tests', 'gl'));
     oldSync = Screen('Preference', 'SkipSyncTests');
+
+    % Every Psychtoolbox demo starts here. Feature level 2 asks PsychImaging
+    % for the normalized 0 to 1 color range, so the Screen colors below read
+    % the same way as the NanoVG colors, which are always 0 to 1. It also
+    % runs AssertOpenGL and unifies the key names. It has to come before the
+    % window opens, because PsychImaging reads the color mode at that point.
+    PsychDefaultSetup(2);
 
     vg = [];
     try

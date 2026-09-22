@@ -64,26 +64,35 @@ static int is_num(const mxArray *a)
 
 static double num_at(const mxArray *a, size_t i)
 {
+    /* Every numeric class is read straight from the data pointer. An earlier
+     * version sent the rare integer classes through mexCallMATLAB("double"),
+     * which meant the interpreter could run inside an argument reader. That
+     * is a poor place for reentrancy, and it is not needed: mxGetData plus
+     * the class test covers all of them. */
+    const void *d = mxGetData(a);
     if (mxIsDouble(a))
-        return ((const double *)mxGetData(a))[i];
+        return ((const double *)d)[i];
     if (mxIsSingle(a))
-        return (double)((const float *)mxGetData(a))[i];
+        return (double)((const float *)d)[i];
     if (mxIsLogical(a))
-        return ((const mxLogical *)mxGetData(a))[i] ? 1.0 : 0.0;
-    if (mxIsInt32(a))
-        return (double)((const int *)mxGetData(a))[i];
+        return ((const mxLogical *)d)[i] ? 1.0 : 0.0;
+    if (mxIsInt8(a))
+        return (double)((const signed char *)d)[i];
     if (mxIsUint8(a))
-        return (double)((const unsigned char *)mxGetData(a))[i];
-    /* Rare integer classes go through the generic path. */
-    {
-        mxArray *tmp = NULL;
-        double v = 0.0;
-        if (mexCallMATLAB(1, &tmp, 1, (mxArray **)&a, "double") == 0 && tmp) {
-            v = ((const double *)mxGetData(tmp))[i];
-            mxDestroyArray(tmp);
-        }
-        return v;
-    }
+        return (double)((const unsigned char *)d)[i];
+    if (mxIsInt16(a))
+        return (double)((const short *)d)[i];
+    if (mxIsUint16(a))
+        return (double)((const unsigned short *)d)[i];
+    if (mxIsInt32(a))
+        return (double)((const int *)d)[i];
+    if (mxIsUint32(a))
+        return (double)((const unsigned int *)d)[i];
+    if (mxIsInt64(a))
+        return (double)((const long long *)d)[i];
+    if (mxIsUint64(a))
+        return (double)((const unsigned long long *)d)[i];
+    return 0.0;
 }
 
 double pnvg_arg_double(const mxArray *a, int i, const char *cmd)
@@ -629,16 +638,23 @@ void h_FindSystemFont(int nlhs, mxArray *plhs[], int nrhs,
      * PsychNanoVGFonts.m; this subcommand only forwards to it. */
     mxArray *args[2];
     mxArray *out = NULL;
+    int status;
     (void)nlhs; (void)nrhs;
     if (!mxIsChar(prhs[0]))
         pnvg_err("psychnanovg:Type",
                  "FindSystemFont: the family must be a char string");
+    /* Both arguments are ours to destroy. Handing prhs[0] to mexCallMATLAB
+     * would give the interpreter a second owner of an array it already owns,
+     * which is undefined and which Octave turns into a crash some calls
+     * later. mxDuplicateArray is the documented way to pass an input on. */
     args[0] = mxCreateString("FindSystemFont");
-    args[1] = (mxArray *)prhs[0];
-    if (mexCallMATLAB(1, &out, 2, args, "PsychNanoVGFonts") != 0 || !out)
+    args[1] = mxDuplicateArray(prhs[0]);
+    status = mexCallMATLAB(1, &out, 2, args, "PsychNanoVGFonts");
+    mxDestroyArray(args[0]);
+    mxDestroyArray(args[1]);
+    if (status != 0 || !out)
         pnvg_err("psychnanovg:Font",
                  "FindSystemFont: PsychNanoVGFonts.m is not on the path");
-    mxDestroyArray(args[0]);
     plhs[0] = out;
 }
 

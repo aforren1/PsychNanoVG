@@ -8,13 +8,15 @@ function test_helpers()
 %   that needs a GPU, so the tests put a recording Screen stub on the path
 %   and run the real MEX with the null renderer.
 
-    here = fileparts(mfilename('fullpath'));
-    stub = fullfile(here, 'stub');
-
-    oldPath = path();
-    cleanup = onCleanup(@() restore_path(oldPath)); %#ok<NASGU>
-    addpath(stub);      % shadows the real Screen for the length of this test
-    rehash_if_matlab();
+    % run_tests puts tests/stub on the path before it loads the MEX file, and
+    % leaves it there. This test therefore changes nothing about the path:
+    % rewriting the load path while a MEX file is loaded made Octave 10 on
+    % Linux crash. See SPEC section 14.
+    if exist('pnvg_stub_reset', 'file') == 0
+        error('psychnanovg:Usage', ...
+              ['test_helpers needs tests/stub on the path. Run it through ' ...
+               'run_tests, which puts it there.']);
+    end
 
     global PNVG_SCREEN_STUB %#ok<GVMIS>
 
@@ -173,20 +175,6 @@ function ok_call(name, fn)
     catch e
         tst('ok', name, false);
         fprintf(2, '        threw %s: %s\n', e.identifier, e.message);
-    end
-end
-
-function restore_path(oldPath)
-    path(oldPath);
-    rehash_if_matlab();
-end
-
-function rehash_if_matlab()
-% MATLAB caches which file a name resolves to, so the stub needs a rehash to
-% take over from the real Screen MEX and to give it back. Octave looks the
-% file up each time and has no rehash of this kind.
-    if exist('OCTAVE_VERSION', 'builtin') == 0
-        rehash;
     end
 end
 
