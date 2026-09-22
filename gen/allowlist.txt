@@ -1,0 +1,34 @@
+# psychnanovg binding generator: exclusions and name overrides.
+#
+# The NanoVG API is small and almost all of it is wanted, so this file lists
+# what to leave out and what to rename, not what to include. Every other
+# `nvg*` function in nanovg.h becomes a subcommand named after the function
+# without the `nvg` prefix.
+#
+# Syntax:
+#   - nvgName            exclude the function
+#   = nvgName NewName    override the subcommand name
+#   ! reason text        free text, ignored
+# Lines that start with # are comments.
+
+# --- SPEC 7.3: internal constructor and destructor, used by the MEX itself
+# --- for the null renderer, never exposed to scripts.
+- nvgCreateInternal
+- nvgDeleteInternal
+- nvgInternalParams
+- nvgDebugDumpPathCache
+
+# --- SPEC 5.1 gives BeginFrame, EndFrame, and CancelFrame hand-written
+# --- handlers: they also save and restore GL state, set the viewport, drain
+# --- GL errors, and record frame statistics. The generated wrappers would
+# --- collide with those names and skip all of that.
+- nvgBeginFrame
+- nvgEndFrame
+- nvgCancelFrame
+
+# --- nvgResetFallbackFonts passes the result of nvgFindFont straight to
+# --- fontstash, which indexes its font array with it and never checks it.
+# --- An unknown family name is -1 there, so the generated wrapper would turn
+# --- a typo into a crash. The hand-written handler resolves the name and
+# --- raises psychnanovg:Handle instead.
+- nvgResetFallbackFonts

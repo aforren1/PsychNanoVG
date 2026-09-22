@@ -1,0 +1,38 @@
+# Build trees and installed static libraries, one pair per engine and platform
+# (build-matlab, build-octave-linux, build-smoke, build-smoke-linux, ...).
+build-*/
+inst-*/
+
+# Compiled MEX files and native test binaries, split by architecture under
+# dist/<arch>/. Nothing under dist/ is committed; the help shim lives in m/.
+dist/
+*.mex*
+*.pdb
+*.ilk
+*.exp
+*.obj
+*.o
+
+# Vendored dependencies are git submodules (see .gitmodules and
+# third_party/PINS.md). Tracy is optional and not vendored yet; when it is
+# added as a submodule, delete this line. third_party/glad/ is generated
+# once and committed.
+third_party/tracy/
+
+# Generator environment. uv.lock is committed so the generator environment is
+# reproducible; the generated sources under src/ and m/ are committed too.
+gen/.venv/
+__pycache__/
+*.pyc
+
+# MATLAB and Octave scratch files and logs from -batch runs
+*.asv
+*.m~
+octave-workspace
+*.log
+
+# CMake and IDE state
+CMakeUserPresets.json
+compile_commands.json
+.cache/
+.vs/

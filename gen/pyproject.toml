@@ -1,0 +1,12 @@
+[project]
+name = "psychnanovg-gen"
+version = "0.1.0"
+description = "Binding generator for the psychnanovg MEX. Parses nanovg.h and emits the dispatch table, enum table, help M-files, and marshaling tests."
+requires-python = ">=3.10"
+dependencies = [
+    "pycparser>=2.22",
+    "glad2>=2.0.8",
+]
+
+[tool.uv]
+package = false

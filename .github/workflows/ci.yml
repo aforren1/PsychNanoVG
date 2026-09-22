@@ -1,0 +1,386 @@
+name: CI
+
+# Strategy, the same shape as mex-msgpack: BUILD on the oldest supported
+# release, then TEST that exact binary on the newest one, and RELEASE only the
+# floor-built binaries.
+#   * MATLAB mex is forward compatible, so one floor build per OS covers every
+#     newer MATLAB.
+#   * Octave has two binary compatible eras, so there is one mex per era:
+#       - 6.4 build  -> loads on Octave 6.4 to 9.4, which is the range that
+#         Psychtoolbox supports.
+#       - 10.1 build -> links the new liboctmex, whose SOVERSION is stable
+#         across major versions, so it covers 10 and later. The 11 forward test
+#         confirms that.
+#     Building on each floor is also the compile coverage: the floor toolchain
+#     is what catches source breakage that a forward test of a prebuilt binary
+#     never would.
+#
+# No hosted runner has a GPU, so every job runs the renderer='null' suite of
+# SPEC 11.1, which covers dispatch, marshaling, paths, transforms, handles, and
+# frame state without OpenGL. The OpenGL path gets its coverage from
+# tests/smoke_gl.c: compiled on Windows, and built and run on Ubuntu under Xvfb
+# with the Mesa llvmpipe software rasterizer. tests/gl/ needs Psychtoolbox and
+# a real display, so it stays on developer machines; run_tests reports it as
+# skipped.
+#
+# dist is split by platform, dist/<arch>/PsychNanoVG.<mexext>, because Octave
+# names its MEX PsychNanoVG.mex on every operating system. Each artifact
+# therefore carries only its own dist/<arch>, and the forward test jobs
+# download it back into the same place. PsychNanoVGSetup puts the right one on
+# the path.
+#
+# third_party/nanovg becomes a git submodule of this repository, and
+# third_party/PINS.md already holds the pinned commit. Every checkout below
+# asks for submodules, and every build job then clones that commit when the
+# header is still missing. The workflow therefore needs no change on the day
+# the submodule appears.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']          # pushing a v* tag also publishes a GitHub Release
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # =============================================================== MATLAB =====
+  # Build on the floor release per OS (R2022b is the first that supports
+  # VS2022 on the hosted Windows runner), then forward test that binary on the
+  # latest MATLAB.
+  matlab-build:
+    name: build · ${{ matrix.os }} · MATLAB ${{ matrix.release }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,  release: R2021b, arch: glnxa64, asset: psychnanovg-matlab-linux }
+          - { os: windows-2022,  release: R2022b, arch: win64,   asset: psychnanovg-matlab-windows }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Fetch NanoVG at the pinned commit
+        shell: bash
+        run: |
+          if [ ! -f third_party/nanovg/src/nanovg.h ]; then
+            commit=$(grep -oE '[0-9a-f]{40}' third_party/PINS.md | head -1)
+            echo "cloning NanoVG at $commit"
+            git clone https://github.com/memononen/nanovg.git third_party/nanovg
+            git -C third_party/nanovg checkout --quiet "$commit"
+          fi
+
+      - name: Install OpenGL development files (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake libx11-dev fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends libgl-dev \
+            || sudo apt-get install -y --no-install-recommends libgl1-mesa-dev
+
+      - uses: matlab-actions/setup-matlab@v3
+        with:
+          release: ${{ matrix.release }}
+
+      - name: Build
+        uses: matlab-actions/run-command@v3
+        env:
+          MLM_LICENSE_TOKEN: ${{ secrets.MLM_LICENSE_TOKEN }}   # private repos only
+        with:
+          command: build
+
+      - name: Test (renderer='null', no GPU)
+        uses: matlab-actions/run-command@v3
+        env:
+          MLM_LICENSE_TOKEN: ${{ secrets.MLM_LICENSE_TOKEN }}
+        with:
+          command: cd tests; run_tests
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.arch }}
+            m
+            README.md
+            SPEC.md
+          if-no-files-found: error
+
+  matlab-test-forward:
+    name: test · ${{ matrix.os }} · MATLAB ${{ matrix.release }}
+    needs: matlab-build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  release: latest, asset: psychnanovg-matlab-linux }
+          - { os: windows-latest, release: latest, asset: psychnanovg-matlab-windows }
+    steps:
+      # tests/ and m/ only. No rebuild, so no NanoVG and no submodule.
+      - uses: actions/checkout@v7
+
+      - uses: matlab-actions/setup-matlab@v3
+        with:
+          release: ${{ matrix.release }}
+
+      - name: Fetch floor-built package
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.asset }}
+          path: .                # restores dist/<arch>/ and m/ from the floor build
+
+      - name: Test the floor binary (no rebuild)
+        uses: matlab-actions/run-command@v3
+        env:
+          MLM_LICENSE_TOKEN: ${{ secrets.MLM_LICENSE_TOKEN }}
+        with:
+          command: cd tests; run_tests
+
+  # =============================================================== Octave =====
+  # One mex per binary compatible era. Build each floor, forward test that exact
+  # binary on newer versions in its era, and ship both.
+  octave-build:
+    name: build · linux · Octave ${{ matrix.floor }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { floor: '6.4.0',  arch: glnxa64, asset: psychnanovg-octave-linux-6.4 }   # Octave 6.4 to 9.4
+          - { floor: '10.1.0', arch: glnxa64, asset: psychnanovg-octave-linux-10 }    # Octave 10 and later
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Fetch NanoVG at the pinned commit
+        run: |
+          if [ ! -f third_party/nanovg/src/nanovg.h ]; then
+            commit=$(grep -oE '[0-9a-f]{40}' third_party/PINS.md | head -1)
+            echo "cloning NanoVG at $commit"
+            git clone https://github.com/memononen/nanovg.git third_party/nanovg
+            git -C third_party/nanovg checkout --quiet "$commit"
+          fi
+
+      - name: Build and test
+        run: |
+          docker run --rm -i -v "$PWD:/work" -w /work "gnuoctave/octave:${{ matrix.floor }}" bash -s <<'EOF'
+          set -e
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            cmake build-essential libx11-dev fonts-dejavu-core
+          apt-get install -y --no-install-recommends libgl-dev \
+            || apt-get install -y --no-install-recommends libgl1-mesa-dev
+          octave --no-gui --eval "build"
+          octave --no-gui --eval "addpath('tests'); run_tests"
+          # the container runs as root; let the runner user read the result
+          chmod -R a+rX /work/dist/${{ matrix.arch }} /work/m
+          EOF
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.arch }}
+            m
+            README.md
+            SPEC.md
+          if-no-files-found: error
+
+  octave-test-forward:
+    name: test · linux · Octave ${{ matrix.octave }} (from ${{ matrix.asset }})
+    needs: octave-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { asset: psychnanovg-octave-linux-6.4, octave: '7.3.0'  }
+          - { asset: psychnanovg-octave-linux-6.4, octave: '9.4.0'  }   # top of the 6.x era
+          - { asset: psychnanovg-octave-linux-10,  octave: '10.3.0' }
+          - { asset: psychnanovg-octave-linux-10,  octave: '11.3.0' }   # liboctmex spans 10 to 11
+    steps:
+      - uses: actions/checkout@v7   # tests/ only, no rebuild
+
+      - name: Fetch built package
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.asset }}
+          path: .
+
+      - name: Test on Octave ${{ matrix.octave }} (no rebuild)
+        run: |
+          docker run --rm -i -v "$PWD:/work" -w /work "gnuoctave/octave:${{ matrix.octave }}" bash -s <<'EOF'
+          set -e
+          octave --no-gui --eval "addpath('tests'); run_tests"
+          EOF
+
+  # MSYS2 is rolling, so there is no old Octave to pin here: build, test, and
+  # ship the current one.
+  octave-windows:
+    name: build · windows · Octave (MSYS2)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-octave
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+
+      - name: Fetch NanoVG at the pinned commit
+        run: |
+          if [ ! -f third_party/nanovg/src/nanovg.h ]; then
+            commit=$(grep -oE '[0-9a-f]{40}' third_party/PINS.md | head -1)
+            echo "cloning NanoVG at $commit"
+            git clone https://github.com/memononen/nanovg.git third_party/nanovg
+            git -C third_party/nanovg checkout --quiet "$commit"
+          fi
+
+      - name: Build and test
+        env:
+          # CMake's "MinGW Makefiles" generator refuses to run while sh.exe is
+          # on PATH, and MSYS2 always puts it there.
+          MEX_CMAKE_GENERATOR: Ninja
+        run: |
+          octave --no-gui --eval "build"
+          octave --no-gui --eval "addpath('tests'); run_tests"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: psychnanovg-octave-windows
+          path: |
+            dist/win64
+            m
+            README.md
+            SPEC.md
+          if-no-files-found: error
+
+  # ========================================================== OpenGL path =====
+  # The only automated coverage of the GL backend. Mesa llvmpipe renders in
+  # software, so the result is a real frame that can be read back, only slow.
+  smoke-gl-linux:
+    name: smoke · linux · Xvfb and llvmpipe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Fetch NanoVG at the pinned commit
+        run: |
+          if [ ! -f third_party/nanovg/src/nanovg.h ]; then
+            commit=$(grep -oE '[0-9a-f]{40}' third_party/PINS.md | head -1)
+            git clone https://github.com/memononen/nanovg.git third_party/nanovg
+            git -C third_party/nanovg checkout --quiet "$commit"
+          fi
+
+      - name: Install Mesa, Xvfb, and the build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake build-essential xvfb libgl1-mesa-dri mesa-utils \
+            libx11-dev fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends libgl-dev \
+            || sudo apt-get install -y --no-install-recommends libgl1-mesa-dev
+
+      - name: Build smoke_gl
+        run: |
+          cmake -S . -B build-smoke-linux -DCMAKE_BUILD_TYPE=Release \
+                -DPSYCHNANOVG_SMOKE_GL=ON
+          cmake --build build-smoke-linux --target smoke_gl
+
+      - name: Run smoke_gl under Xvfb
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a ./build-smoke-linux/smoke_gl
+
+  smoke-gl-windows-compile:
+    name: smoke · windows · compile only
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Fetch NanoVG at the pinned commit
+        shell: bash
+        run: |
+          if [ ! -f third_party/nanovg/src/nanovg.h ]; then
+            commit=$(grep -oE '[0-9a-f]{40}' third_party/PINS.md | head -1)
+            git clone https://github.com/memononen/nanovg.git third_party/nanovg
+            git -C third_party/nanovg checkout --quiet "$commit"
+          fi
+
+      # The hosted Windows runner has no GPU and no interactive desktop
+      # session, so the WGL context cannot be created. Compiling still proves
+      # that the Win32 branch and the whole GL backend build with MSVC.
+      - name: Compile smoke_gl with MSVC
+        shell: bash
+        run: |
+          cmake -S . -B build-smoke -DPSYCHNANOVG_SMOKE_GL=ON
+          cmake --build build-smoke --config Release --target smoke_gl
+
+  # ============================================================== Release =====
+  # On a v* tag, publish the floor-built packages as a GitHub Release. It runs
+  # only after every build, forward test, and smoke job passes, so a release
+  # implies the shipped binaries were confirmed forward compatible.
+  release:
+    name: Publish release
+    needs:
+      - matlab-build
+      - matlab-test-forward
+      - octave-build
+      - octave-test-forward
+      - octave-windows
+      - smoke-gl-linux
+      - smoke-gl-windows-compile
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release packages
+        uses: actions/download-artifact@v8
+        with:
+          path: packages
+          pattern: psychnanovg-*
+
+      # Each package holds its own dist/<arch>/, plus m/, README.md and SPEC.md,
+      # so one zip is a complete install for that engine and platform.
+      - name: Zip each package
+        run: |
+          cd packages
+          for d in */; do
+            name="${d%/}"
+            (cd "$d" && zip -qr "../${name}.zip" .)
+          done
+          ls -la *.zip
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" packages/*.zip \
+            --repo "${{ github.repository }}" \
+            --title "psychnanovg ${{ github.ref_name }}" \
+            --generate-notes
