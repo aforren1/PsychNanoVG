@@ -1,6 +1,6 @@
 # PsychNanoVG specification
 
-Status: specification, no code yet. Version 0.1, 2026-09-22.
+Status: implemented through phase 1, with the phase 2 render targets and `CreateImageFromTexture` delivered early. Specification version 0.1, 2026-09-22; section 14 records every deviation.
 
 `PsychNanoVG` is a MEX binding of NanoVG for MATLAB and GNU Octave. NanoVG is a
 small antialiased 2D vector graphics library on OpenGL. The binding draws
@@ -589,7 +589,7 @@ section 9.4.
 | Phase | Content |
 |---|---|
 | 1 | Lifecycle, generator, all generated subcommands, batched paths, paints, fonts, images from files and arrays, `Stats`, null-renderer tests, GL tests, demo. |
-| 2 | Render targets, `CreateImageFromTexture`, Tracy GPU zones, `Path` matrix form with arcs, per-vertex color polylines through `LinearGradient` helpers. |
+| 2 | Render targets and `CreateImageFromTexture` (both delivered in phase 1), Tracy GPU zones, `Path` matrix form with arcs, per-vertex color polylines through `LinearGradient` helpers. |
 | 3 | Multiple contexts for multiple PTB windows, GLES backends if PTB on embedded Linux needs them. |
 
 ## 14. Deviations from version 0.1
