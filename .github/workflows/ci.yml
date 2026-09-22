@@ -392,5 +392,5 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" packages/*.zip \
             --repo "${{ github.repository }}" \
-            --title "psychnanovg ${{ github.ref_name }}" \
+            --title "PsychNanoVG ${{ github.ref_name }}" \
             --generate-notes
