@@ -587,7 +587,7 @@ section 9.4.
 | Should `Init` default `NVG_STENCIL_STROKES` on? | Yes. It gives correct overlapping strokes at a small cost. |
 | Provide `FindSystemFont` at all, or require explicit paths? | Provide it. Experiments run on lab machines with unknown font sets. |
 | Should `Polyline` accept single as well as double? | Yes, both, converted to float in the handler. |
-| macOS support? | Apple silicon, with the GL2 backend, built and tested by CI. First CI run 2026-09-22: the Homebrew Octave build passed and is blocking; the smoke test reached a 2.1 context on the Apple Software Renderer and passed every check but the release of the offscreen target, fixed by making render target binds a stack (section 14); the MATLAB build failed on `mex` rejecting a bare `-framework` argument, fixed with the `LDFLAGS=` form. Those two jobs stay advisory until they pass. Intel Macs are not covered. |
+| macOS support? | Apple silicon, with the GL2 backend, built and tested by CI. First CI run 2026-09-22: the Homebrew Octave build passed and is blocking; the smoke test reached a 2.1 context on the Apple Software Renderer and passed every check but the release of the offscreen target, fixed by making render target binds a stack (section 14); the MATLAB build failed on `mex` rejecting a bare `-framework` argument, fixed with the `LDFLAGS=` form. Round 2 (same day): the MATLAB build and the smoke test passed and are blocking; the Octave build passed but one Stats assertion failed, because `clock_gettime(CLOCK_MONOTONIC)` is rounded to microseconds on macOS and a null renderer frame measured 0 ns; the timer now uses `clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)` on Apple. Intel Macs are not covered. |
 
 ## 13. Phasing
 

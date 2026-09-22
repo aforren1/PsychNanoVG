@@ -53,6 +53,12 @@ double pnvg_now_ns(void)
     }
     QueryPerformanceCounter(&t);
     return (double)t.QuadPart * scale;
+#elif defined(__APPLE__)
+    /* clock_gettime(CLOCK_MONOTONIC) is rounded to microseconds on macOS, so
+     * a null renderer EndFrame measured 0 there and the Stats test failed on
+     * the CI runner. CLOCK_MONOTONIC_RAW through the _np variant keeps the
+     * mach_absolute_time resolution, about 42 ns on Apple silicon. */
+    return (double)clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

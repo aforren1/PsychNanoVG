@@ -57,7 +57,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Only the macOS entry is allowed to fail. Drop this line, and the two
     # other continue-on-error lines below, after the first green macOS run.
-    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -124,7 +123,6 @@ jobs:
     name: test · ${{ matrix.os }} · MATLAB ${{ matrix.release }}
     needs: matlab-build
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -406,8 +404,8 @@ jobs:
   smoke-gl-macos:
     name: smoke · macos · CGL and a render target
     runs-on: macos-latest
-    # New job. Becomes blocking after the first green run.
-    continue-on-error: true
+    # Blocking since its first passing run on 2026-09-22 (Apple Software
+    # Renderer, GL 2.1, render target round trip included).
     steps:
       - uses: actions/checkout@v7
         with:
