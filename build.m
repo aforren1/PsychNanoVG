@@ -269,10 +269,22 @@ function build_mex(libfile, is_octave)
     if ispc
         args{end+1} = '-lopengl32';
     elseif ismac
-        % mex and mkoctfile both drive clang here, and the framework flag has
-        % to reach the linker as two separate words.
-        args{end+1} = '-framework';
-        args{end+1} = 'OpenGL';
+        if is_octave
+            % mkoctfile passes an argument it does not know straight to the
+            % linker, so the two words arrive intact.
+            args{end+1} = '-framework';
+            args{end+1} = 'OpenGL';
+        else
+            % MATLAB's mex parses its own arguments and rejects a bare
+            % -framework. The flag has to travel inside a build variable, as
+            % one argument.
+            args{end+1} = 'LDFLAGS=$LDFLAGS -framework OpenGL';
+            if ~isempty(getenv('CI'))
+                % The link line is the first thing to look at when a macOS
+                % runner fails, and no one here has a Mac to try it on.
+                args = [{'-v'}, args];
+            end
+        end
     else
         args{end+1} = '-lGL';
         args{end+1} = '-ldl';

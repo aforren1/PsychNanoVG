@@ -82,7 +82,7 @@ int pnvg_init(int backend, int createFlags)
 
     memset(&g_state, 0, sizeof(g_state));
     paint_table_reset();
-    g_state.boundTarget = -1;
+    g_state.targetDepth = 0;
 
     if (backend == PNVG_BACKEND_NULL) {
         g_state.vg = pnvg_null_create(createFlags);
@@ -131,7 +131,7 @@ int pnvg_shutdown(void)
 
     free(g_state.scratch);
     memset(&g_state, 0, sizeof(g_state));
-    g_state.boundTarget = -1;
+    g_state.targetDepth = 0;
     return PNVG_OK;
 }
 
@@ -484,24 +484,39 @@ void *pnvg_target_ptr(int rt)
     return g_state.targets[rt - 1];
 }
 
+static int target_stack_find(int rt)
+{
+    int i;
+    for (i = 0; i < g_state.targetDepth; i++)
+        if (g_state.targetStack[i] == rt)
+            return i;
+    return -1;
+}
+
 int pnvg_target_bind(int rt)
 {
     void *fb = pnvg_target_ptr(rt);
     if (!fb)
         return fail(PNVG_E_HANDLE, "render target %d is not open", rt);
+    if (target_stack_find(rt) >= 0)
+        return fail(PNVG_E_FRAMESTATE,
+                    "render target %d is already bound", rt);
+    if (g_state.targetDepth >= PNVG_MAX_TARGETS)
+        return fail(PNVG_E_RANGE, "render target binds nest more than %d deep",
+                    PNVG_MAX_TARGETS);
     g_state.targetPrevFbo[rt - 1] = pnvg_gl_current_fbo();
     pnvg_gl_fb_bind(fb);
-    g_state.boundTarget = rt;
+    g_state.targetStack[g_state.targetDepth++] = rt;
     return PNVG_OK;
 }
 
 int pnvg_target_unbind(void)
 {
-    int rt = g_state.boundTarget;
-    if (rt < 1)
+    int rt;
+    if (g_state.targetDepth < 1)
         return fail(PNVG_E_FRAMESTATE, "no render target is bound");
+    rt = g_state.targetStack[--g_state.targetDepth];
     pnvg_gl_fb_bind_raw(g_state.targetPrevFbo[rt - 1]);
-    g_state.boundTarget = -1;
     return PNVG_OK;
 }
 
@@ -520,8 +535,16 @@ int pnvg_target_delete(int rt)
     void *fb = pnvg_target_ptr(rt);
     if (!fb)
         return fail(PNVG_E_HANDLE, "render target %d is not open", rt);
-    if (g_state.boundTarget == rt)
-        pnvg_target_unbind();
+    /* Deleting a bound target unwinds the stack down to it, so the
+     * framebuffer that was current before it was bound comes back. */
+    if (target_stack_find(rt) >= 0) {
+        while (g_state.targetDepth > 0) {
+            int top = g_state.targetStack[g_state.targetDepth - 1];
+            pnvg_target_unbind();
+            if (top == rt)
+                break;
+        }
+    }
     pnvg_image_unmark(pnvg_gl_fb_image(fb));
     pnvg_gl_fb_delete(fb);
     g_state.targets[rt - 1] = NULL;

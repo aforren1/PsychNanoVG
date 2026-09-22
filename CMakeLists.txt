@@ -1,4 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
+
+# MATLAB links the MEX with -mmacosx-version-min=11.0, so the static library
+# has to target the same version. Without this the linker warns that the
+# objects were built for a newer macOS than it is linking for. It has to be
+# set before project().
+if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING
+        "Oldest macOS the library runs on, matched to MATLAB's mex" FORCE)
+endif()
+
 project(psychnanovg C)
 
 # The MEX itself is compiled by `mex`, not here. CMake only builds the static

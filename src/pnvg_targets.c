@@ -61,19 +61,23 @@ void h_RenderTargetBind(int nlhs, mxArray *plhs[], int nrhs,
                         const mxArray *prhs[])
 {
     int rt = pnvg_arg_int(prhs[0], 0, "RenderTargetBind");
+    int status;
     (void)nlhs; (void)plhs; (void)nrhs;
-    if (pnvg_target_bind(rt) != PNVG_OK)
-        pnvg_err("psychnanovg:Handle", "RenderTargetBind: %s",
-                 pnvg_last_error());
+    /* The core distinguishes an unknown handle (Handle), a target that is
+     * already bound (FrameState), and a bind stack that is full (Range). */
+    status = pnvg_target_bind(rt);
+    if (status != PNVG_OK)
+        pnvg_raise(status, "RenderTargetBind");
 }
 
 void h_RenderTargetUnbind(int nlhs, mxArray *plhs[], int nrhs,
                           const mxArray *prhs[])
 {
+    int status;
     (void)nlhs; (void)plhs; (void)nrhs; (void)prhs;
-    if (pnvg_target_unbind() != PNVG_OK)
-        pnvg_err("psychnanovg:FrameState", "RenderTargetUnbind: %s",
-                 pnvg_last_error());
+    status = pnvg_target_unbind();
+    if (status != PNVG_OK)
+        pnvg_raise(status, "RenderTargetUnbind");
 }
 
 void h_RenderTargetImage(int nlhs, mxArray *plhs[], int nrhs,

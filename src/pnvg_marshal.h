@@ -25,6 +25,9 @@ typedef struct {
 } pnvg_str;
 
 void pnvg_err(const char *id, const char *fmt, ...);
+/* Raises the identifier that belongs to a core status code (SPEC 5.5), with
+ * the core's last error text after the subcommand name. */
+void pnvg_raise(int status, const char *cmd);
 
 double pnvg_arg_double(const mxArray *a, int i, const char *cmd);
 float pnvg_arg_float(const mxArray *a, int i, const char *cmd);

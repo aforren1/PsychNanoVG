@@ -74,6 +74,39 @@ function test_gl_target()
     tst('throws', 'a deleted render target is gone', 'psychnanovg:Handle', ...
         @() PsychNanoVGGL(vg, 'RenderTargetImage', rt));
 
+    % ---- binds nest ----
+    % A script can render into a target while another one is bound, and the
+    % inner unbind has to give the outer one back rather than forget it. The
+    % macOS smoke test found this: it binds an offscreen target for the whole
+    % run, and the round trip above used to clear the record of it.
+    outer = PsychNanoVGGL(vg, 'RenderTargetCreate', 64, 64);
+    inner = PsychNanoVGGL(vg, 'RenderTargetCreate', 32, 32);
+    Screen('BeginOpenGL', vg.win);
+    ok = true;
+    try
+        PsychNanoVG('RenderTargetBind', outer);
+        PsychNanoVG('RenderTargetBind', inner);
+        PsychNanoVG('RenderTargetUnbind');   % back to outer
+        PsychNanoVG('RenderTargetUnbind');   % back to the window
+    catch nestErr
+        ok = false;
+    end
+    Screen('EndOpenGL', vg.win);
+    tst('ok', 'a nested bind and unbind pair works', ok);
+    if ~ok
+        fprintf(2, '        threw %s: %s\n', nestErr.identifier, ...
+                nestErr.message);
+    end
+    tst('throws', 'one unbind too many', 'psychnanovg:FrameState', ...
+        @() PsychNanoVGGL(vg, 'RenderTargetUnbind'));
+
+    PsychNanoVGGL(vg, 'RenderTargetBind', outer);
+    tst('throws', 'binding the same target twice', 'psychnanovg:FrameState', ...
+        @() PsychNanoVGGL(vg, 'RenderTargetBind', outer));
+    PsychNanoVGGL(vg, 'RenderTargetUnbind');
+    PsychNanoVGGL(vg, 'RenderTargetDelete', outer);
+    PsychNanoVGGL(vg, 'RenderTargetDelete', inner);
+
     [~, isUserspace] = Screen('GetOpenGLDrawMode');
     tst('eq', 'the test left 2D mode behind', isUserspace, 0);
 end

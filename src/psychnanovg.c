@@ -32,8 +32,10 @@ void pnvg_err(const char *id, const char *fmt, ...)
     mexErrMsgIdAndTxt(id, "%s", msg);
 }
 
-/* Maps a core status code onto the identifier table of SPEC 5.5. */
-static void pnvg_raise(int status, const char *cmd)
+/* Maps a core status code onto the identifier table of SPEC 5.5. Shared with
+ * the hand-written handlers in pnvg_targets.c, so that a core status keeps
+ * its identifier no matter which handler reports it. */
+void pnvg_raise(int status, const char *cmd)
 {
     const char *id;
     switch (status) {

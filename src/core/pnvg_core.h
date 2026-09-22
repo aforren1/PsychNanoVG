@@ -73,7 +73,11 @@ typedef struct {
 
     void *targets[PNVG_MAX_TARGETS];
     int targetPrevFbo[PNVG_MAX_TARGETS];
-    int boundTarget;                    /* -1 when none */
+    /* Binds nest: a script can render into a target while another one is
+     * already bound, and each has its own saved framebuffer. The stack holds
+     * the handles, innermost last, and targetDepth is 0 when none is bound. */
+    int targetStack[PNVG_MAX_TARGETS];
+    int targetDepth;
 
     unsigned int imageLive[PNVG_MAX_IMAGES / 32];
     /* Fontstash ids count up from 0 and are never freed, so one high water

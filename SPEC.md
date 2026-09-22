@@ -587,7 +587,7 @@ section 9.4.
 | Should `Init` default `NVG_STENCIL_STROKES` on? | Yes. It gives correct overlapping strokes at a small cost. |
 | Provide `FindSystemFont` at all, or require explicit paths? | Provide it. Experiments run on lab machines with unknown font sets. |
 | Should `Polyline` accept single as well as double? | Yes, both, converted to float in the handler. |
-| macOS support? | Apple silicon, with the GL2 backend, built and tested by CI. The three macOS jobs carry `continue-on-error` until the first green run. Intel Macs are not covered. |
+| macOS support? | Apple silicon, with the GL2 backend, built and tested by CI. First CI run 2026-09-22: the Homebrew Octave build passed and is blocking; the smoke test reached a 2.1 context on the Apple Software Renderer and passed every check but the release of the offscreen target, fixed by making render target binds a stack (section 14); the MATLAB build failed on `mex` rejecting a bare `-framework` argument, fixed with the `LDFLAGS=` form. Those two jobs stay advisory until they pass. Intel Macs are not covered. |
 
 ## 13. Phasing
 
@@ -690,3 +690,4 @@ Psychtoolbox `Screen` MEX does not load.
 | macOS | Nothing has been run. The proc loader for the OpenGL framework and the GL2 backend that section 4.1 requires there are written but have never been compiled. |
 | The GitHub Actions workflow | Written against the shape of `mex-msgpack`, and its YAML parses, but no run has taken place. There is no repository to push it to yet. |
 | `m/PsychNanoVGDemo.m` | Written to section 11.3. Not run against a display, because it holds a full screen window for six seconds. |
+| Render target binds nest: the core keeps a stack of bound targets, and `RenderTargetBind` refuses a target that is already on it. Section 5.3 described one bound target at a time. | The macOS smoke test binds an offscreen target for the whole run because a drawable-less CGL context has no default framebuffer, and the render target round trip inside it used to overwrite the single "bound target" record, so the outer unbind reported nothing bound. `RenderTargetUnbind` now returns to the framebuffer that was current before the innermost bind, `RenderTargetDelete` of a bound target unwinds to it, binding the same target twice raises `psychnanovg:FrameState`, and the MEX handlers map the core status codes onto the section 5.5 identifiers instead of assuming `Handle`. `tests/gl/test_gl_target.m` covers the nesting. |
