@@ -27,11 +27,14 @@ function outFile = CaptureReadmeScreenshot(outFile)
     end
     maxBytes = 400 * 1024;
 
+    % This is a source-tree tool, not shipped, and it changes the path once,
+    % before the MEX file is loaded, so the addpath is safe here. The shipped
+    % demos never change the path.
     addpath(fullfile(root, 'm'));
     PsychNanoVGSetup();
-    % PsychNanoVGDemo opens its window through tests/gl/ptb_test_window,
-    % which sets these two as well. They are set here too, so that this
-    % script states what it needs.
+    % PsychNanoVGDemo opens its window through m/private/
+    % psychnanovg_demo_window, which sets these two as well. They are set
+    % here too, so that this script states what it needs.
     Screen('Preference', 'SkipSyncTests', 2);
     Screen('Preference', 'VisualDebugLevel', 0);
 

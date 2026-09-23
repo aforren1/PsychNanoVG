@@ -41,10 +41,9 @@ function PsychNanoVGTwoWindowDemo(screenid, duration)
 
     global GL %#ok<GVMIS>
     PsychNanoVGSetup();
-    % ptb_test_window sets the preferences that keep an unattended run
-    % quiet: SkipSyncTests 2 and VisualDebugLevel 0.
-    addpath(fullfile(fileparts(fileparts(mfilename('fullpath'))), ...
-                     'tests', 'gl'));
+    % m/private/psychnanovg_demo_window sets the preferences that keep an
+    % unattended run quiet: SkipSyncTests 2 and VisualDebugLevel 0. The demo
+    % does not change the path; see that file.
     oldSync = Screen('Preference', 'SkipSyncTests');
     % Normalized 0 to 1 colors for Screen, the same range as NanoVG. It has
     % to come before the windows open.
@@ -56,10 +55,10 @@ function PsychNanoVGTwoWindowDemo(screenid, duration)
     vgA = [];
     vgB = [];
     try
-        winA = ptb_test_window(w, h, screenid, 0.15, [40 60]);
+        winA = psychnanovg_demo_window(w, h, screenid, 0.15, [40 60]);
         twoWindows = true;
         try
-            winB = ptb_test_window(w, h, screenid, 0.1, [40 + w + gap, 60]);
+            winB = psychnanovg_demo_window(w, h, screenid, 0.1, [40 + w + gap, 60]);
         catch openErr
             twoWindows = false;
             winB = winA;

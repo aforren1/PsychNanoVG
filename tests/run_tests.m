@@ -25,6 +25,28 @@ function run_tests()
     PsychNanoVGSetup();
     addpath(here);
 
+    % A release zip needs PsychNanoVGSetup in its root, before m/ is on the
+    % path, and the helpers need it in m/. The two copies must not drift.
+    tst('ok', 'PsychNanoVGSetup.m in the root and in m/ agree', ...
+        isequal(fileread(fullfile(root, 'PsychNanoVGSetup.m')), ...
+                fileread(fullfile(root, 'm', 'PsychNanoVGSetup.m'))));
+
+    % The demos open their window through a private copy of the test helper,
+    % because a release zip has no tests/. The bodies must not drift.
+    tst('ok', 'the demo window helper and the test window helper agree', ...
+        strcmp(helper_body(fullfile(here, 'gl', 'ptb_test_window.m')), ...
+               helper_body(fullfile(root, 'm', 'private', ...
+                                    'psychnanovg_demo_window.m'))));
+
+    % test_setup removes and adds the package path, so it runs here, before
+    % the first call loads the MEX file.
+    fprintf('-- test_setup\n');
+    before = TST_FAIL;
+    test_setup(root);
+    if TST_FAIL == before
+        fprintf('   ok\n');
+    end
+
     % test_helpers needs a Screen that records its calls. The stub goes on the
     % path here, once, before the first call loads the MEX file, and the test
     % itself never touches the path. Rewriting the load path while a MEX file
@@ -84,6 +106,13 @@ function run_tests()
     if TST_FAIL > 0
         error('run_tests:failed', '%d test(s) failed', TST_FAIL);
     end
+end
+
+function body = helper_body(file)
+% The code after the help text; the two copies differ only in name and help.
+    txt = fileread(file);
+    k = strfind(txt, 'if nargin < 1; w = 640; end');
+    body = txt(k(1):end);
 end
 
 function rehash_if_matlab()

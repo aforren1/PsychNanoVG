@@ -115,8 +115,11 @@ jobs:
           path: |
             dist/${{ matrix.arch }}
             m
+            PsychNanoVGSetup.m
             README.md
+            LICENSE
             SPEC.md
+            docs/images/psychnanovg-demo.png
           if-no-files-found: error
 
   matlab-test-forward:
@@ -199,8 +202,11 @@ jobs:
           path: |
             dist/${{ matrix.arch }}
             m
+            PsychNanoVGSetup.m
             README.md
+            LICENSE
             SPEC.md
+            docs/images/psychnanovg-demo.png
           if-no-files-found: error
 
   octave-test-forward:
@@ -291,8 +297,11 @@ jobs:
           path: |
             dist/win64
             m
+            PsychNanoVGSetup.m
             README.md
+            LICENSE
             SPEC.md
+            docs/images/psychnanovg-demo.png
           if-no-files-found: error
 
   # ========================================================== OpenGL path =====
@@ -337,7 +346,7 @@ jobs:
       # SPEC 14.8: Psychtoolbox makes GLES contexts on Linux through its
       # Waffle backends, so the NanoVG GLES2 and GLES3 backends are a build
       # option there. CI compiles both, library and smoke test, and does not
-      # run them; the EGL pbuffer run is a developer step (README).
+      # run them; the EGL pbuffer run is a developer step (DEV.md).
       - name: Compile the GLES2 and GLES3 backends
         run: |
           sudo apt-get install -y --no-install-recommends libegl-dev libgles-dev
@@ -408,8 +417,11 @@ jobs:
           path: |
             dist/maca64
             m
+            PsychNanoVGSetup.m
             README.md
+            LICENSE
             SPEC.md
+            docs/images/psychnanovg-demo.png
           if-no-files-found: error
 
   # The runner has no display, so smoke_gl makes a CGL context with no
@@ -469,8 +481,11 @@ jobs:
           path: packages
           pattern: psychnanovg-*
 
-      # Each package holds its own dist/<arch>/, plus m/, README.md and SPEC.md,
-      # so one zip is a complete install for that engine and platform.
+      # Each package holds its own dist/<arch>/, plus m/, PsychNanoVGSetup.m,
+      # README.md, SPEC.md, and the README picture under docs/images/, so one
+      # zip is a complete install for that engine and platform. Nothing comes
+      # from tests/: the demos use m/private/. The zip has no top folder;
+      # users unzip into one.
       - name: Zip each package
         run: |
           cd packages

@@ -57,10 +57,9 @@ function img = PsychNanoVGDemo(screenid, duration, opts)
 
     global GL %#ok<GVMIS>
     PsychNanoVGSetup();
-    % The window comes from the same helper as the tests, so the preferences
-    % that keep an unattended run quiet are set in one place.
-    addpath(fullfile(fileparts(fileparts(mfilename('fullpath'))), ...
-                     'tests', 'gl'));
+    % The window comes from m/private/psychnanovg_demo_window, a copy of the
+    % test helper. The demo must not change the path: a release zip has no
+    % tests/, and a path change while the MEX is locked crashes Octave 10.1.
     oldSync = Screen('Preference', 'SkipSyncTests');
 
     % Every Psychtoolbox demo starts here. Feature level 2 asks PsychImaging
@@ -77,10 +76,10 @@ function img = PsychNanoVGDemo(screenid, duration, opts)
     vg = [];
     try
         if isfield(opts, 'size')
-            [win, rect] = ptb_test_window(opts.size(1), opts.size(2), ...
+            [win, rect] = psychnanovg_demo_window(opts.size(1), opts.size(2), ...
                                           screenid, bg);
         else
-            [win, rect] = ptb_test_window([], [], screenid, bg);
+            [win, rect] = psychnanovg_demo_window([], [], screenid, bg);
         end
         w = RectWidth(rect);
         h = RectHeight(rect);

@@ -8,201 +8,145 @@ window, from MATLAB and from GNU Octave. It is a MEX binding of
 adds Bezier paths, stroke joins and caps, gradients, image patterns, and
 TrueType text with exact glyph metrics. The GPU does the antialiasing. The
 MEX draws into the same framebuffer as `Screen`, so you can mix the two in
-one frame.
+one frame. Use it when `Screen` cannot draw the shape, the edge, or the text
+layout that your stimulus needs.
 
 ![One frame of PsychNanoVGDemo in a 1280x720 Psychtoolbox window: a pair of eyes with drop shadows and highlights, an arc gauge with a gradient band, a ring with a gradient edge and 100 cached copies of it, a Bezier trajectory, and a wave with one color per vertex.](docs/images/psychnanovg-demo.png)
 
 The picture is one frame of `PsychNanoVGDemo` read back from a Psychtoolbox
-window, and `tools/CaptureReadmeScreenshot.m` makes it again.
+window.
 
-`SPEC.md` is the design reference. This file tells you how to build the
-binding, how to test it, and how to use it.
+## Install
 
-## Status
+You do not need a compiler. Each release zip holds a compiled MEX file for
+one engine and one platform.
 
-| Part | State |
-|---|---|
-| Generated API, 96 subcommands, 121 in total | Works. Tested with the null renderer under MATLAB R2023a and Octave 10.1. |
-| Batched paths, paints, fonts, images, `Stats` | Works. |
-| Arcs and shapes in the `Path` matrix, `StrokeSegments`, `PsychNanoVGPolylineGradient` | Works. Phase 2. Covered by the null renderer suite, by `tests/gl/test_gl_paths`, and by the native smoke test. |
-| Psychtoolbox integration, `tests/gl/` | Works under MATLAB. With the suite that needs no GPU, 420 assertions pass, including shapes, text metrics, the render target round trip, an arc gauge, a gradient polyline, and two windows. Octave passes the 348 that need no GPU. |
-| Several windows, one context each | Works. Phase 3. Tested with two Psychtoolbox windows under MATLAB, with the null renderer everywhere, and with two GL contexts in the native smoke test. |
-| Render targets, `CreateImageFromTexture` | Works. Covered by `tests/gl/test_gl_target` and by the native smoke test. |
-| `tests/gl/` under Octave | Skipped. The Psychtoolbox `Screen` MEX for Octave does not load on the development machine. |
-| `m/PsychNanoVGDemo` | Runs under MATLAB. It holds a full screen window for six seconds by default. |
-| Linux | Works. Built and tested with Octave 6.4 on Ubuntu 22.04, and `smoke_gl` runs under Xvfb with Mesa llvmpipe. |
-| GLES2 and GLES3 on Linux | A build option. Phase 3. The smoke test passes in an EGL pbuffer with Mesa. Not tried in a Psychtoolbox window, because that needs a Psychtoolbox Waffle build. |
-| macOS on Apple silicon | Built and tested on the `macos-latest` runner, with the GL2 backend. The GL 2.1 context has no GPU timer unless it offers `GL_ARB_timer_query`, so `gpuNs` can be NaN there. |
-| macOS on Intel | Not covered. |
-| Tracy | Works when you turn it on. CPU zones for every subcommand and the hot paths, and a GPU zone per frame. Built and captured on Windows with MSVC and with Octave's MinGW. Not tried on Linux or macOS. |
+> The first release is pending. Until it is published, the Releases page is
+> empty. Build from source with [DEV.md](https://github.com/aforren1/PsychNanoVG/blob/main/DEV.md),
+> or download a package from the Artifacts list of a green CI run.
 
-See the last section of `SPEC.md` for the full list of deviations.
+1. Open the [Releases page](https://github.com/aforren1/PsychNanoVG/releases).
+2. Download the zip for your engine and platform:
 
-## Requirements
+   | Zip | Use it for |
+   |---|---|
+   | `psychnanovg-matlab-windows.zip` | MATLAB R2022b or later on Windows |
+   | `psychnanovg-matlab-linux.zip` | MATLAB R2021b or later on Linux |
+   | `psychnanovg-matlab-macos.zip` | MATLAB R2023b or later on an Apple silicon Mac |
+   | `psychnanovg-octave-windows.zip` | Octave 10 on Windows |
+   | `psychnanovg-octave-linux-6.4.zip` | Octave 6.x to 9.x on Linux |
+   | `psychnanovg-octave-linux-10.zip` | Octave 10 or later on Linux |
+   | `psychnanovg-octave-macos.zip` | Homebrew Octave on an Apple silicon Mac |
 
-- MATLAB R2023a or later, or GNU Octave 10.1 or later.
-- A C compiler. MATLAB uses MSVC 2022 on Windows. Octave uses the MinGW gcc
-  that it ships with.
-- CMake 3.16 or later.
-- Psychtoolbox 3.0.19 or later, to draw in a window. The tests that do not
-  touch the GPU run without it.
-- A GPU with OpenGL 3.3 on Windows and Linux, or OpenGL 2.1 on macOS.
+3. Make an empty folder, for example `C:\toolbox\PsychNanoVG`, and unzip into
+   it. The zip has no top folder, so the folder then holds
+   `PsychNanoVGSetup.m`, `dist/`, `m/`, `docs/`, `README.md`, and `SPEC.md`.
+4. In MATLAB or Octave, add the folder and run the setup:
 
-## Build
+   ```matlab
+   addpath('C:\toolbox\PsychNanoVG');
+   PsychNanoVGSetup();
+   ```
 
-Clone the repository with its submodules:
+   `PsychNanoVGSetup` adds `dist/<arch>` and `m/` to the path, in that order.
+5. Make sure that it works:
 
-    git clone --recurse-submodules https://github.com/aforren1/PsychNanoVG.git
-    cd PsychNanoVG
+   ```matlab
+   v = PsychNanoVG('Version')
+   ```
 
-NanoVG is a submodule. If the clone above was made without
-`--recurse-submodules`, run `git submodule update --init --recursive`, or clone
-the commit recorded in `third_party/PINS.md` by hand:
+   The output is a struct. `v.psychnanovg` is the version of the binding and
+   `v.nanovg` is the NanoVG commit. If the MEX for your engine and platform is
+   not in `dist/`, `PsychNanoVGSetup` raises `psychnanovg:NotBuilt` and names
+   the file that it looked for. Then download the correct zip.
 
-    git clone https://github.com/memononen/nanovg.git third_party/nanovg
+These two commands do the same as step 4, without `addpath`:
 
-Then build:
+```matlab
+run('C:\toolbox\PsychNanoVG\PsychNanoVGSetup.m');
+```
 
-    matlab -batch build
-    octave-cli --eval build
+```matlab
+cd('C:\toolbox\PsychNanoVG');
+PsychNanoVGSetup();
+```
 
-`build.m` compiles the static library with CMake and then calls `mex`. The
-two engines use different compilers, so each gets its own build directory
-(`build-matlab`, `build-octave`) and its own install directory
-(`inst-matlab`, `inst-octave`). On Linux and macOS the names carry a platform
-suffix, such as `build-octave-linux`, because one working tree is often shared
-between Windows and WSL and an object file from one toolchain makes CMake
-refuse to configure for the other. The MEX goes to
-`dist/<arch>/PsychNanoVG.<mexext>`, where `<arch>` is `win64`, `glnxa64`,
-`maci64`, or `maca64`.
+### Keep it on the path
 
-`dist/` is split by platform because Octave names its MEX `PsychNanoVG.mex` on
-every operating system. Without the split, a Linux build in a tree shared with
-Windows would replace the Windows one. A MATLAB and an Octave build for the
-same platform sit side by side, because their file extensions differ.
+Step 4 changes the path for this session only. To keep the change, do one of
+these:
 
-Other targets:
+- **Saved path, MATLAB or Octave.** In step 4, run
+  `PsychNanoVGSetup('add', 'save')` instead of `PsychNanoVGSetup()`. It adds
+  the folders and then runs `savepath`. MATLAB can need write access to its
+  installation folder for this; if `savepath` fails, you get the warning
+  `psychnanovg:SavePath`, and you can use `startup.m` instead. Octave saves
+  the path to `~/.octaverc`.
+- **MATLAB, `startup.m`.** Add the two lines of step 4 to `startup.m`, in
+  the folder that `userpath` shows. Psychtoolbox has its own `startup.m`,
+  which calls `PsychStartup`. Your file hides it, so make this the first
+  line of your file:
 
-| Command | Effect |
-|---|---|
-| `build` | Build the library and the MEX. |
-| `build gen` | Run the binding generator first, then build. |
-| `build test` | Build, then run `tests/run_tests`. |
-| `build smoke` | Build the native GL smoke test and run it. |
-| `build clean` | Remove the build and install directories. |
+  ```matlab
+  if exist('PsychStartup'), PsychStartup; end
+  ```
 
-Set `MEX_CMAKE_GENERATOR` to choose a different CMake generator.
+- **Octave, `.octaverc`.** Add the two lines of step 4 to `~/.octaverc`. On
+  Windows, `~` is your user folder, for example `C:\Users\you\.octaverc`.
+  If the file already adds Psychtoolbox, put the lines after it.
 
-### Build for GLES on Linux
+### Remove it
 
-Psychtoolbox makes an OpenGL ES context only with its Waffle display
-backends, on Linux: the Wayland `Screen` that ships in
-`PsychBasic/Octave5LinuxFiles64/Wayland`, or an embedded build. Set
-`PSYCH_USE_GFX_BACKEND=gles2` or `gles3` before Psychtoolbox starts. The
-MEX then needs the matching NanoVG backend:
+```matlab
+PsychNanoVGSetup('remove');           % this session only
+PsychNanoVGSetup('remove', 'save');   % and save the path
+```
 
-    PSYCHNANOVG_GLES=3 octave-cli --eval build
+This takes `dist/<arch>`, `m/`, and the package folder off the path. First
+it closes every PsychNanoVG context and unloads the MEX file. Close your
+Psychtoolbox windows before you remove it. If the path does not hold the
+package, the command does nothing. If you added the setup lines to
+`startup.m` or `~/.octaverc`, delete them too.
 
-The value is `2` or `3`. The GLES backend replaces the GL3 backend, so this
-MEX works only in a GLES window, and `PsychNanoVG('Version').backend` says
-`GLES3`. Build again without the variable to get the normal MEX back. The
-GLES backends have no GPU timer, so `gpuNs` in `Stats` is NaN. NanoVG has no
-GLES1 backend. SPEC section 14.8 has the details.
+If the MEX file stays loaded, `PsychNanoVGSetup` raises
+`psychnanovg:Locked`, prints what to do, and does not change the path.
 
-To run the smoke test on the GLES backend in an EGL pbuffer, without a
-display:
+## First example
 
-    cmake -S . -B build-gles3 -DPSYCHNANOVG_GLES=3 -DPSYCHNANOVG_SMOKE_GL=ON
-    cmake --build build-gles3 --target smoke_gl
-    ./build-gles3/smoke_gl
+This script opens a Psychtoolbox window, draws a rounded rectangle and a
+line of text, shows it for two seconds, and closes the window:
 
-It needs the EGL and GLES development files, such as `libegl-dev` and
-`libgles-dev` on Ubuntu.
+```matlab
+PsychDefaultSetup(2);
+InitializeMatlabOpenGL(1);                 % before OpenWindow
+[win, rect] = PsychImaging('OpenWindow', max(Screen('Screens')), 0.5);
+[cx, cy] = RectCenter(rect);
+vg = PsychNanoVGOpen(win);                 % one context for this window
+PsychNanoVGFrame('Begin', vg);
+PsychNanoVG('BeginPath');
+PsychNanoVG('RoundedRect', cx - 200, cy - 100, 400, 200, 24);
+PsychNanoVG('FillColor', [0.2 0.4 0.8 1]);
+PsychNanoVG('Fill');
+PsychNanoVG('FontFaceId', vg.fonts.sans);
+PsychNanoVG('FontSize', 40);
+PsychNanoVG('FillColor', [1 1 1 1]);
+PsychNanoVG('Text', cx - 125, cy + 14, 'Hello, NanoVG');
+PsychNanoVGFrame('End', vg);
+Screen('Flip', win);
+WaitSecs(2);
+PsychNanoVGClose(vg);
+sca;
+```
 
-### Put it on the path
+`PsychNanoVGOpen` makes a NanoVG context for the window.
+`PsychNanoVGFrame('Begin')` and `PsychNanoVGFrame('End')` enclose the
+drawing. `PsychNanoVGClose` deletes the context before the window closes.
+If Psychtoolbox stops with a sync test failure on a laptop, add
+`Screen('Preference', 'SkipSyncTests', 1)` before `OpenWindow`, for the test
+only. The sections below explain each step.
 
-`PsychNanoVGSetup` picks the `dist/<arch>` directory for the engine and the
-platform you are on, and puts it ahead of `m/`. The order matters, because a
-MEX file only takes precedence over an M-file of the same name inside one
-directory, and `m/PsychNanoVG.m` holds the help text.
-
-    addpath(fullfile(root, 'm'));
-    PsychNanoVGSetup();
-
-It raises `psychnanovg:NotBuilt` and names the file it looked for when the MEX
-for this platform is missing.
-
-## Test
-
-    matlab -batch "addpath('tests'); run_tests"
-    octave-cli --eval "addpath('tests'); run_tests"
-
-`run_tests` calls `PsychNanoVGSetup` itself, so no other path setup is needed.
-
-The tests in `tests/` need no GPU. They use the null renderer: a NanoVG
-context whose backend callbacks do nothing. `test_helpers` also puts a
-recording `Screen` stub from `tests/stub/` on the path for its own duration,
-so the convenience layer is checked without Psychtoolbox: the region opens
-once, closes once, and closes again on an error. Path building, the state stack,
-text layout, the handle tables, and all of the marshaling run for real. Only
-the OpenGL calls are absent.
-
-`test_contexts` checks several contexts with the null renderer: switching,
-handles, per-context state and Stats, `Shutdown` of a context that is not
-current, and the MEX lock.
-
-The tests in `tests/gl/` need Psychtoolbox and a GPU. `run_tests` reports
-them as skipped when `Screen` does not answer. `test_gl_contexts` opens two
-small windows side by side. When a second window does not open, it puts both
-contexts into one window and skips the checks that need two.
-
-Every script that opens a window goes through `tests/gl/ptb_test_window.m`.
-That helper sets `SkipSyncTests` and `VisualDebugLevel`, so an unattended run
-does not stop for the display sync report or the welcome splash.
-
-`tests/smoke_gl.c` is a native program that opens its own off-screen window
-and OpenGL context, with WGL on Windows and GLX elsewhere. It exercises the
-real GL path without Psychtoolbox, and it is the only GL coverage under Octave
-and on CI. It also makes a second NanoVG context and a second GL context, to
-check that contexts keep their state apart and refuse the wrong GL context:
-
-    matlab -batch "build smoke"
-    octave-cli --eval "build smoke"
-
-On Linux `build smoke` runs it through `xvfb-run`, so it needs no display.
-
-## Continuous integration
-
-`.github/workflows/ci.yml` runs on every push and every pull request. This
-project is its own repository, so the workflow needs no path filter and every
-step runs at the repository root.
-
-| Job | What it does |
-|---|---|
-| `matlab-build` | Builds and tests on the floor release: MATLAB R2021b on Ubuntu 22.04 and R2022b on Windows 2022. Uploads the package. |
-| `matlab-test-forward` | Downloads that exact binary and tests it on the latest MATLAB, on Linux and on Windows. No rebuild. |
-| `octave-build` | Builds and tests in the `gnuoctave/octave` Docker images for 6.4.0 and 10.1.0, one per binary compatible era. Uploads both packages. |
-| `octave-test-forward` | Tests the 6.4 binary on Octave 7.3 and 9.4, and the 10.1 binary on 10.3 and 11.3. No rebuild. |
-| `octave-windows` | Builds and tests with the official GNU Octave Windows zip (10.1.0, cached), using the toolchain and `make` it ships, as on a developer machine. Uploads the package. |
-| `smoke-gl-linux` | Builds `smoke_gl` and runs it under `xvfb-run` with Mesa llvmpipe. This is the only automated OpenGL coverage. |
-| `smoke-gl-windows-compile` | Compiles `smoke_gl` with MSVC. The hosted Windows runner has no GPU, so it is not run. |
-| `octave-macos` | Builds and tests with Homebrew Octave on Apple silicon. Uploads the package. |
-| `smoke-gl-macos` | Builds `smoke_gl` and runs it against a CGL context with no drawable, rendering into a render target. |
-| `release` | On a `v*` tag, zips every package and publishes a GitHub Release with `gh release create`. |
-
-No runner has a GPU, so every job runs the `renderer='null'` suite. The tests
-in `tests/gl/` need Psychtoolbox and a display, so `run_tests` reports them as
-skipped on CI.
-
-Each artifact holds only its own `dist/<arch>/`, plus `m/`, `README.md`, and
-`SPEC.md`, so one download is a complete install for that engine and platform.
-Find them under Artifacts on the run summary page, or on the Releases page for
-a tag.
-
-`third_party/nanovg` becomes a git submodule of this repository. Until then
-each build job clones the commit that `third_party/PINS.md` records, but only
-when `third_party/nanovg/src/nanovg.h` is missing, so the workflow works
-before and after the change.
+`PsychNanoVGDemo` shows much more. It holds a full screen window for six
+seconds.
 
 ## Use
 
@@ -393,8 +337,9 @@ subcommands do the loop in C and cost one call:
 | `Rects` | Nx4 |
 | `StrokeSegments` | Nx4 segments and Nx8 color pairs, one gradient stroke per segment |
 
-`perf/PsychNanoVGPerf` measures the difference. On the development machine
-(Intel Iris Xe, 1,000 points, null renderer, the faster of two passes):
+`perf/PsychNanoVGPerf`, in the source repository, measures the difference.
+On the development machine (Intel Iris Xe, 1,000 points, null renderer, the
+faster of two passes):
 
 | Measurement | MATLAB R2023a | Octave 10.1 |
 |---|---|---|
@@ -475,57 +420,6 @@ work written as seven subcommands per segment. The GPU then takes about 6.5
 us per segment on Intel Iris Xe, because each stroke is its own draw. SPEC
 section 14.7 has the full table.
 
-## Measure
-
-`Stats` is always compiled in. It counts every subcommand and every frame.
-
-    s = PsychNanoVG('Stats');
-    s.endFrameNs        % the last frame, in nanoseconds
-    s.endFrameMaxNs
-    s.gpuNs             % from a GL timer query pair, read two frames later
-    s.drawCalls         % NanoVG counters for the last frame
-    s.commands          % per subcommand: name, calls, totalNs, maxNs
-    PsychNanoVG('Stats', 'reset');
-
-`gpuNs` is NaN when the context cannot measure GPU time: with the null
-renderer, and on a GL context below 3.3 that has no `GL_ARB_timer_query`.
-
-`endFrameNs` times NanoVG's own work. The graphics driver can submit the
-commands a little later, still inside `EndFrame`, so for heavy frames the
-`EndFrame` row of `s.commands` is the better measure of what the frame costs
-the CPU.
-
-### Profile with Tracy
-
-[Tracy](https://github.com/wolfpld/tracy) shows every subcommand as a CPU
-zone and every frame as a GPU zone. It is not part of a normal build.
-
-1. Clone the tested version into `third_party/tracy`:
-
-       git clone --branch v0.11.1 https://github.com/wolfpld/tracy.git third_party/tracy
-
-2. Build with the environment variable set:
-
-       set PSYCHNANOVG_TRACY=1
-       matlab -batch build
-
-   That is the Windows command prompt. In PowerShell, set it with
-   `$env:PSYCHNANOVG_TRACY = '1'`. On Linux and macOS, write
-   `PSYCHNANOVG_TRACY=1 matlab -batch build`. Octave builds the same way.
-   `Version().build` then ends in `tracy=1`. Without the variable, the next
-   build is a normal one again.
-
-3. Start the Tracy profiler, or `tracy-capture -o run.tracy`, and run the
-   script. The profiler starts with the first `PsychNanoVG` call and stops
-   when MATLAB unloads the MEX file.
-
-The GPU zone "NanoVG frame" spans `BeginFrame` to `EndFrame` and uses the same
-timer queries as `gpuNs`. On a context without timer queries there is no GPU
-zone. `tracy-csvexport` exports the CPU zones.
-
-If `PSYCHNANOVG_TRACY` is set and `third_party/tracy` is missing, `build`
-stops with `build:tracy` and prints the clone command.
-
 ## Colors, coordinates, and text
 
 - Colors are 1x4 double in 0 to 1, or 1x3 with alpha 1.
@@ -539,37 +433,6 @@ stops with `build:tracy` and prints the clone command.
   rebuilding the MEX.
 - A new render target holds whatever was in that memory. Clear it yourself
   after `RenderTargetBind`, with `glClear` through mogl.
-
-## Files
-
-| Path | Contents |
-|---|---|
-| `src/psychnanovg.c` | The MEX entry point, dispatch, marshaling, lifecycle, contexts. |
-| `src/core/` | The NanoVG-facing layer, with no MATLAB types. The smoke test links it. |
-| `src/pnvg_gl.c` | glad, the NanoVG GL or GLES backend, the proc loader, GL state save and restore, the GPU timer. |
-| `src/pnvg_batch.c` | `Polyline`, `Polygon`, `Path`, `Circles`, `Rects`, `StrokeSegments`. |
-| `src/pnvg_profiler.h`, `src/core/pnvg_tracy.cpp` | The Stats switch and the Tracy zones. The C++ file is compiled only with Tracy. |
-| `src/pnvg_targets.c` | Render targets and `CreateImageFromTexture`. |
-| `src/gen_dispatch.c`, `src/gen_enums.c` | Generated. Committed. |
-| `gen/generate.py` | The generator. Run it with `build gen`. |
-| `m/` | The convenience layer, help text, opcodes, the path setup, the font search, the gradient polyline, the demos. |
-| `tests/` | The suite that needs no GPU, plus `tests/gl/` and `smoke_gl.c`. |
-| `perf/` | The timings of SPEC 9.4, and the cost of `SetContext`. |
-| `tools/CaptureReadmeScreenshot.m` | Makes `docs/images/psychnanovg-demo.png`, the picture at the top of this file. |
-
-## Regenerate the binding
-
-    matlab -batch "build gen"
-
-The generator reads `third_party/nanovg/src/nanovg.h`, applies the exclusions
-and the renames in `gen/allowlist.txt`, and writes `src/gen_dispatch.c`,
-`src/gen_enums.c`, `m/PsychNanoVG.m`, `m/PsychNanoVGOp.m`, and
-`tests/test_gen_marshal.m`. It needs Python 3.10 or later, and it runs
-through `uv`. The generated files are committed, so you only need the
-generator when NanoVG changes.
-
-A function whose signature no rule in SPEC 7.2 covers is dropped and
-reported. The generator does not guess.
 
 ## Errors
 
@@ -589,13 +452,35 @@ reported. The generator does not guess.
 | `psychnanovg:Range` | A numeric argument is out of range, or all 16 contexts are in use. |
 | `psychnanovg:Context` | The OpenGL context that is current belongs to another window than the current context. |
 
+## Requirements
+
+- Psychtoolbox 3.0.19 or later.
+- One of these engines. The Install table names the zip for each one.
+  - Windows: MATLAB R2022b or later, or Octave 10.
+  - Linux: MATLAB R2021b or later, Octave 6.x to 9.x, or Octave 10 or later.
+  - macOS on Apple silicon: MATLAB R2023b or later, or Homebrew Octave.
+    Intel Macs are not supported.
+- A GPU with OpenGL 3.3 on Windows and Linux, or OpenGL 2.1 on macOS.
+- No compiler. A release zip holds the compiled MEX file. You need a
+  compiler only to build from source; see
+  [DEV.md](https://github.com/aforren1/PsychNanoVG/blob/main/DEV.md).
+
+## Where to go next
+
+- [SPEC.md](SPEC.md) is the design reference. It is in every release zip.
+  Section 5 lists every subcommand and helper, and section 14 lists where the
+  implementation differs from the design.
+- [DEV.md](https://github.com/aforren1/PsychNanoVG/blob/main/DEV.md) tells
+  contributors how to build from source, run the tests, measure frame time
+  with `Stats`, and profile with Tracy.
+- [RELEASING.md](https://github.com/aforren1/PsychNanoVG/blob/main/RELEASING.md)
+  is the checklist for publishing a release.
+
 ## License
 
-NanoVG is zlib licensed. glad output is in the public domain, with an MIT
-option. This binding follows the license of the workspace.
+PsychNanoVG is MIT licensed; see `LICENSE`.
 
-## Releasing
-
-A release is a `v*` tag; CI builds and publishes the packages. The
-step-by-step checklist, including where the version string lives and how to
-recover from a failed release job, is in [RELEASING.md](RELEASING.md).
+NanoVG, compiled into the MEX, is zlib licensed. The generated glad loader is
+public domain (WTFPL or CC0), and the Khronos headers it embeds are Apache
+2.0. License texts are in `third_party/` of the source repository. Tracy,
+used only in profiling builds that are not released, is BSD 3-Clause.

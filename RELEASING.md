@@ -68,7 +68,9 @@ When the demo changed, make the README picture again and look at it:
 - `SPEC.md`: the status line at the top names the phase that is implemented.
   Anything that changed against the specification gets a row in section 14.
 - `README.md`: new subcommands or helpers appear where their group is
-  described.
+  described. After the first release, remove the "first release is pending"
+  note from the Install section.
+- `DEV.md`: new build options, test suites, or CI jobs.
 - `third_party/PINS.md`: only if the NanoVG submodule moved. Then `build
   gen` again, because the generator stamps the NanoVG commit into the
   version string, and review the generated diff: a NanoVG API change shows
@@ -107,10 +109,11 @@ gh release view v0.2.0
 gh release download v0.2.0 --pattern "psychnanovg-matlab-windows.zip" --dir %TEMP%\rel
 ```
 
-Unzip into an empty folder and, in a fresh MATLAB:
+Unzip into an empty folder and, in a fresh MATLAB, follow the Install steps
+of README.md literally, with that folder:
 
 ```matlab
-addpath('m'); PsychNanoVGSetup(); PsychNanoVG('Version')
+addpath('C:\path\to\folder'); PsychNanoVGSetup(); PsychNanoVG('Version')
 ```
 
 The `psychnanovg` field must show the new version and the `nanovg` field the
@@ -129,8 +132,15 @@ Octave specific.
 | `psychnanovg-matlab-macos.zip` | MATLAB R2023b, `macos-latest` | MATLAB R2023b and later on Apple silicon Macs |
 | `psychnanovg-octave-macos.zip` | Homebrew Octave, `macos-latest` | Homebrew Octave on Apple silicon Macs |
 
-Each zip holds `dist/<arch>/PsychNanoVG.<mexext>`, `m/`, `README.md`, and
-`SPEC.md`, and is a complete install for that engine and platform.
+Each zip holds `PsychNanoVGSetup.m`, `dist/<arch>/PsychNanoVG.<mexext>`,
+`m/` (with `m/private/`), `README.md`, `SPEC.md`, `LICENSE`, and
+`docs/images/psychnanovg-demo.png`, with no top folder, and is a complete
+install for that engine and platform. The picture is there so that the
+README renders from an unzipped package. Nothing comes from `tests/`: the
+demos open their window through `m/private/psychnanovg_demo_window.m`. The root `PsychNanoVGSetup.m` is what
+a new user calls first, and the Install section of README.md depends on it.
+The `path:` list of each `Upload package` step in
+`.github/workflows/ci.yml` decides the content.
 
 The two macOS packages are built on `macos-latest`, which is Apple silicon,
 so they are `maca64` and they do not run on an Intel Mac. Nobody on the team
