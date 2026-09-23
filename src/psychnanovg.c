@@ -29,6 +29,9 @@ void pnvg_err(const char *id, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
+    /* The raise below does not return, so the zones that are open now would
+     * never see their end. */
+    PNVG_ZONE_UNWIND();
     mexErrMsgIdAndTxt(id, "%s", msg);
 }
 
@@ -553,10 +556,13 @@ static void pnvg_at_exit(void)
     /* R7: without a current GL context the GL objects cannot be deleted, and
      * the driver reclaims them with the context anyway. */
     pnvg_state *s = pnvg_state_get();
-    if (s->vg && s->backend != PNVG_BACKEND_NULL && !pnvg_gl_have_context())
-        return;
-    if (s->vg)
+    if (s->vg && (s->backend == PNVG_BACKEND_NULL || pnvg_gl_have_context()))
         pnvg_shutdown();
+#if PNVG_TRACY
+    /* The profiler threads live in this MEX file's code, which is about to
+     * be unloaded. */
+    pnvg_prof_shutdown();
+#endif
 }
 
 void h_Shutdown(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
@@ -759,7 +765,7 @@ void h_Stats(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
             pnvg_err("psychnanovg:Usage",
                      "Stats: the only option is the string 'reset'");
         memset(g_cmdstats, 0, sizeof(g_cmdstats));
-        memset(&s->stats, 0, sizeof(s->stats));
+        pnvg_stats_reset();
         return;
     }
 
@@ -837,6 +843,26 @@ static void print_help(int idx)
 /* Dispatch                                                            */
 /* ------------------------------------------------------------------ */
 
+#if PNVG_TRACY
+/* One source location per subcommand, so the Tracy timeline names the
+ * subcommand rather than "dispatch". The server reads a location by address
+ * after the zone has ended, so the table is static, and it is filled once
+ * so that the per-call path does not allocate. */
+static pnvg_srcloc g_cmdloc[PNVG_MAX_CMDS];
+
+static const pnvg_srcloc *cmd_srcloc(int idx)
+{
+    if (!g_cmdloc[idx].name) {
+        g_cmdloc[idx].function = "mexFunction";
+        g_cmdloc[idx].file = __FILE__;
+        g_cmdloc[idx].line = (uint32_t)__LINE__;
+        g_cmdloc[idx].color = 0;
+        g_cmdloc[idx].name = pnvg_cmds[idx].name;
+    }
+    return &g_cmdloc[idx];
+}
+#endif
+
 void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     char name[PNVG_NAME_MAX];
@@ -850,6 +876,12 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
         mexAtExit(pnvg_at_exit);
         atexit_set = 1;
     }
+#if PNVG_TRACY
+    pnvg_prof_startup();
+    /* An error raised by MATLAB itself, not through pnvg_err, can still
+     * leave a zone open. Closing it here keeps the nesting right. */
+    PNVG_ZONE_UNWIND();
+#endif
 
     if (nrhs == 0) {
         print_list();
@@ -916,7 +948,12 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 #if PSYCHNANOVG_STATS
     t0 = pnvg_now_ns();
 #endif
-    PNVG_ZONE("dispatch");
+#if PNVG_TRACY
+    if (idx < PNVG_MAX_CMDS)
+        PNVG_ZONE_LOC(cmd_srcloc(idx));
+    else
+        PNVG_ZONE("dispatch");
+#endif
     c->fn(nlhs, plhs, nargs, prhs + 1);
     PNVG_ZONE_END();
 #if PSYCHNANOVG_STATS

@@ -596,10 +596,15 @@ HANDWRITTEN = [
     ("PaintDelete", "h_PaintDelete", 1, 1, 0, "PNVG_F_INIT", "Paints",
      "PsychNanoVG('PaintDelete', paint). Frees one paint table entry."),
     ("Path", "h_Path", 1, 1, 0, "PNVG_F_INIT|PNVG_F_FRAME", "Batch",
-     "PsychNanoVG('Path', cmds). cmds is a cell array of {'M',x,y}, {'L',x,y}, "
-     "{'Q',cx,cy,x,y}, {'C',c1x,c1y,c2x,c2y,x,y}, {'Z'}, or an Nx7 matrix with "
-     "the command code in column 1 (1=M, 2=L, 3=Q, 4=C, 5=Z) and zero padding. "
-     "The matrix form is the fast path."),
+     "PsychNanoVG('Path', cmds). cmds is an Nx7 matrix with a command code in "
+     "column 1 and its arguments after it, zero padded: 1 M x y, 2 L x y, "
+     "3 Q cx cy x y, 4 C c1x c1y c2x c2y x y, 5 Z, 6 Arc cx cy r a0 a1 dir, "
+     "7 ArcTo x1 y1 x2 y2 r, 8 Ellipse cx cy rx ry, 9 Circle cx cy r, "
+     "10 Rect x y w h, 11 RoundedRect x y w h r, 12 Winding dir. Angles are "
+     "radians; dir is 1 (CCW, SOLID) or 2 (CW, HOLE). Every row is checked "
+     "before any is drawn. The same commands also go in a cell array, such "
+     "as {{'M',x,y}, {'Arc',cx,cy,r,a0,a1,'CW'}, {'Z'}}. The matrix form is "
+     "the fast path."),
     ("Polygon", "h_Polygon", 1, 1, 0, "PNVG_F_INIT|PNVG_F_FRAME", "Batch",
      "PsychNanoVG('Polygon', xy). Polyline with the path closed."),
     ("Polyline", "h_Polyline", 1, 2, 0, "PNVG_F_INIT|PNVG_F_FRAME", "Batch",
@@ -637,7 +642,16 @@ HANDWRITTEN = [
      "context. Call it inside Screen('BeginOpenGL')."),
     ("Stats", "h_Stats", 0, 1, 1, "0", "Lifecycle",
      "s = PsychNanoVG('Stats' [, 'reset']). Per subcommand calls, totalNs, and "
-     "maxNs, plus per frame endFrameNs, gpuNs, and NanoVG draw counters."),
+     "maxNs, plus per frame endFrameNs, gpuNs, and NanoVG draw counters. "
+     "gpuNs is NaN when the context has no GL timer queries."),
+    ("StrokeSegments", "h_StrokeSegments", 2, 2, 0, "PNVG_F_INIT|PNVG_F_FRAME",
+     "Batch",
+     "PsychNanoVG('StrokeSegments', seg, rgba). seg is Nx4 [x0 y0 x1 y1], "
+     "rgba is Nx8 [r0 g0 b0 a0 r1 g1 b1 a1], double or single. Strokes each "
+     "segment with a linear gradient from its first color to its second, "
+     "with the current stroke width, cap, and join. Contiguous segments of "
+     "one color become one stroke. Replaces the current path and keeps the "
+     "stroke paint. See PsychNanoVGPolylineGradient."),
     ("Version", "h_Version", 0, 0, 1, "0", "Lifecycle",
      "v = PsychNanoVG('Version'). Struct with nanovg, psychnanovg, backend, "
      "glVersion, glRenderer, and build."),
@@ -985,7 +999,8 @@ def emit_help_m(bindings, cmds, path, version):
                 first = first[:65].rsplit(" ", 1)[0] + "..."
             L.append("%%%%     %-24s %s" % (name, first))
         L.append("%")
-    L.append("%   See also PsychNanoVGOp, PsychNanoVGFonts, PsychNanoVGDemo.")
+    L.append("%   See also PsychNanoVGOp, PsychNanoVGFonts, PsychNanoVGDemo,")
+    L.append("%   PsychNanoVGPolylineGradient.")
     L.append("")
     L.append("msg = ['The PsychNanoVG MEX file is not on the path. ', ...")
     L.append("       'Run build, then call PsychNanoVGSetup, which adds ', ...")

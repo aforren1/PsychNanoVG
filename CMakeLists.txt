@@ -64,12 +64,31 @@ endif()
 if(PSYCHNANOVG_TRACY)
     set(TRACY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tracy)
     if(NOT EXISTS ${TRACY_DIR}/public/TracyClient.cpp)
-        message(FATAL_ERROR "Tracy is missing. See third_party/PINS.md.")
+        message(FATAL_ERROR
+            "PSYCHNANOVG_TRACY is ON but Tracy is missing: "
+            "${TRACY_DIR}/public/TracyClient.cpp does not exist. Run:\n"
+            "  git clone --branch v0.11.1 https://github.com/wolfpld/tracy.git third_party/tracy\n"
+            "or configure with -DPSYCHNANOVG_TRACY=OFF. See third_party/PINS.md.")
     endif()
     enable_language(CXX)
-    target_sources(pnvg PRIVATE ${TRACY_DIR}/public/TracyClient.cpp)
+    target_sources(pnvg PRIVATE
+        ${TRACY_DIR}/public/TracyClient.cpp
+        src/core/pnvg_tracy.cpp)
     target_include_directories(pnvg PUBLIC ${TRACY_DIR}/public)
-    target_compile_definitions(pnvg PUBLIC PSYCHNANOVG_TRACY=1 TRACY_ENABLE)
+    # A MEX file is loaded and unloaded inside a long-lived process, so the
+    # profiler starts on the first call and stops in mexAtExit instead of in
+    # static constructors. The host also owns crash handling: MATLAB's JVM
+    # raises access violations on purpose and handles them, and Tracy's
+    # handler took the first one for a crash, suspended every other thread,
+    # and hung MATLAB in Screen('CloseAll'). build.m passes the same defines
+    # to mex.
+    target_compile_definitions(pnvg PUBLIC PSYCHNANOVG_TRACY=1 TRACY_ENABLE
+        TRACY_DELAYED_INIT TRACY_MANUAL_LIFETIME TRACY_NO_CRASH_HANDLER)
+    if(WIN32)
+        target_link_libraries(pnvg PUBLIC ws2_32 dbghelp advapi32 user32)
+    elseif(NOT APPLE)
+        target_link_libraries(pnvg PUBLIC pthread)
+    endif()
 endif()
 
 if(MSVC)

@@ -20,3 +20,12 @@ int pnvg_nvg_counters(NVGcontext *ctx, int *drawCalls, int *fill, int *stroke,
     *text = ctx->textTriCount;
     return 1;
 }
+
+void pnvg_nvg_stroke_paint(NVGcontext *ctx, NVGpaint *get, const NVGpaint *set)
+{
+    NVGstate *state = nvg__getState(ctx);
+    if (get)
+        *get = state->stroke;
+    if (set)
+        state->stroke = *set;
+}

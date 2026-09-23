@@ -86,63 +86,138 @@ static double cell_num(const mxArray *row, int k, int rowIndex)
     return ((const double *)mxGetData(e))[0];
 }
 
+/* The cell form names each command. The single letters are the SVG-like
+ * names that the matrix codes 1 to 5 started with; the others are the
+ * NanoVG names without the prefix, because SVG's own arc command has a
+ * different meaning. nargs counts the elements after the name. */
+typedef struct {
+    const char *name;
+    int code;
+    int nargs;
+    const char *usage;
+} path_op;
+
+static const path_op g_pathops[] = {
+    {"M", PNVG_PATH_M, 2, "M takes x and y"},
+    {"L", PNVG_PATH_L, 2, "L takes x and y"},
+    {"Q", PNVG_PATH_Q, 4, "Q takes cx, cy, x, y"},
+    {"C", PNVG_PATH_C, 6, "C takes c1x, c1y, c2x, c2y, x, y"},
+    {"Z", PNVG_PATH_Z, 0, "Z takes no arguments"},
+    {"Arc", PNVG_PATH_ARC, 6, "Arc takes cx, cy, r, a0, a1, dir"},
+    {"ArcTo", PNVG_PATH_ARCTO, 5, "ArcTo takes x1, y1, x2, y2, r"},
+    {"Ellipse", PNVG_PATH_ELLIPSE, 4, "Ellipse takes cx, cy, rx, ry"},
+    {"Circle", PNVG_PATH_CIRCLE, 3, "Circle takes cx, cy, r"},
+    {"Rect", PNVG_PATH_RECT, 4, "Rect takes x, y, w, h"},
+    {"RoundedRect", PNVG_PATH_ROUNDEDRECT, 5,
+     "RoundedRect takes x, y, w, h, r"},
+    {"Winding", PNVG_PATH_WINDING, 1, "Winding takes dir"},
+};
+
+static int ieq(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        char x = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+        char y = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+        if (x != y)
+            return 0;
+    }
+    return *a == *b;
+}
+
+/* dir accepts a number or a constant name, as the Arc and PathWinding
+ * subcommands do, and must end up as one of NanoVG's two directions. */
+static int cell_dir(const mxArray *row, int k, int rowIndex)
+{
+    int d = pnvg_arg_enum(mxGetCell(row, (mwIndex)k), k, "Path");
+    if (d != 1 && d != 2)
+        pnvg_err("psychnanovg:Range",
+                 "Path: entry %d: dir must be 1 (NVG_CCW, NVG_SOLID) or 2 "
+                 "(NVG_CW, NVG_HOLE), not %d", rowIndex + 1, d);
+    return d;
+}
+
 static void path_cell(const mxArray *a)
 {
     NVGcontext *vg = PNVG_VG;
     mwSize i, n = mxGetNumberOfElements(a);
     for (i = 0; i < n; i++) {
         const mxArray *row = mxGetCell(a, i);
-        char op[8];
+        const path_op *op = NULL;
+        char name[16];
+        float v[6];
         mwSize nel;
+        int k, r = (int)i;
         if (!row || !mxIsCell(row))
             pnvg_err("psychnanovg:Type",
                      "Path: entry %d must be a cell such as {'L', x, y}",
-                     (int)i + 1);
+                     r + 1);
         nel = mxGetNumberOfElements(row);
-        if (nel < 1 || !mxIsChar(mxGetCell(row, 0)) ||
-            mxGetString(mxGetCell(row, 0), op, sizeof(op)) != 0)
+        if (nel < 1 || !mxIsChar(mxGetCell(row, 0)))
             pnvg_err("psychnanovg:Type",
-                     "Path: entry %d must start with a command letter",
-                     (int)i + 1);
-        switch (op[0]) {
-        case 'M': case 'm':
-            if (nel != 3)
-                pnvg_err("psychnanovg:Usage", "Path: M takes x and y");
-            nvgMoveTo(vg, (float)cell_num(row, 1, (int)i),
-                      (float)cell_num(row, 2, (int)i));
+                     "Path: entry %d must start with a command name", r + 1);
+        if (mxGetString(mxGetCell(row, 0), name, sizeof(name)) == 0) {
+            for (k = 0; k < (int)(sizeof(g_pathops) / sizeof(g_pathops[0]));
+                 k++) {
+                if (ieq(name, g_pathops[k].name)) {
+                    op = &g_pathops[k];
+                    break;
+                }
+            }
+        }
+        if (!op)
+            pnvg_err("psychnanovg:Usage",
+                     "Path: entry %d has command '%s', not M, L, Q, C, Z, "
+                     "Arc, ArcTo, Ellipse, Circle, Rect, RoundedRect, or "
+                     "Winding", r + 1, name);
+        if ((int)nel != op->nargs + 1)
+            pnvg_err("psychnanovg:Usage", "Path: entry %d: %s", r + 1,
+                     op->usage);
+        /* The direction is the last argument of Arc and the only one of
+         * Winding, and it may be a name, so it is read on its own. */
+        for (k = 0; k < op->nargs; k++) {
+            if ((op->code == PNVG_PATH_ARC && k == 5) ||
+                op->code == PNVG_PATH_WINDING)
+                v[k] = (float)cell_dir(row, k + 1, r);
+            else
+                v[k] = (float)cell_num(row, k + 1, r);
+        }
+        switch (op->code) {
+        case PNVG_PATH_M:
+            nvgMoveTo(vg, v[0], v[1]);
             break;
-        case 'L': case 'l':
-            if (nel != 3)
-                pnvg_err("psychnanovg:Usage", "Path: L takes x and y");
-            nvgLineTo(vg, (float)cell_num(row, 1, (int)i),
-                      (float)cell_num(row, 2, (int)i));
+        case PNVG_PATH_L:
+            nvgLineTo(vg, v[0], v[1]);
             break;
-        case 'Q': case 'q':
-            if (nel != 5)
-                pnvg_err("psychnanovg:Usage", "Path: Q takes cx, cy, x, y");
-            nvgQuadTo(vg, (float)cell_num(row, 1, (int)i),
-                      (float)cell_num(row, 2, (int)i),
-                      (float)cell_num(row, 3, (int)i),
-                      (float)cell_num(row, 4, (int)i));
+        case PNVG_PATH_Q:
+            nvgQuadTo(vg, v[0], v[1], v[2], v[3]);
             break;
-        case 'C': case 'c':
-            if (nel != 7)
-                pnvg_err("psychnanovg:Usage",
-                         "Path: C takes c1x, c1y, c2x, c2y, x, y");
-            nvgBezierTo(vg, (float)cell_num(row, 1, (int)i),
-                        (float)cell_num(row, 2, (int)i),
-                        (float)cell_num(row, 3, (int)i),
-                        (float)cell_num(row, 4, (int)i),
-                        (float)cell_num(row, 5, (int)i),
-                        (float)cell_num(row, 6, (int)i));
+        case PNVG_PATH_C:
+            nvgBezierTo(vg, v[0], v[1], v[2], v[3], v[4], v[5]);
             break;
-        case 'Z': case 'z':
+        case PNVG_PATH_Z:
             nvgClosePath(vg);
             break;
+        case PNVG_PATH_ARC:
+            nvgArc(vg, v[0], v[1], v[2], v[3], v[4], (int)v[5]);
+            break;
+        case PNVG_PATH_ARCTO:
+            nvgArcTo(vg, v[0], v[1], v[2], v[3], v[4]);
+            break;
+        case PNVG_PATH_ELLIPSE:
+            nvgEllipse(vg, v[0], v[1], v[2], v[3]);
+            break;
+        case PNVG_PATH_CIRCLE:
+            nvgCircle(vg, v[0], v[1], v[2]);
+            break;
+        case PNVG_PATH_RECT:
+            nvgRect(vg, v[0], v[1], v[2], v[3]);
+            break;
+        case PNVG_PATH_ROUNDEDRECT:
+            nvgRoundedRect(vg, v[0], v[1], v[2], v[3], v[4]);
+            break;
         default:
-            pnvg_err("psychnanovg:Usage",
-                     "Path: entry %d has command '%s', not M, L, Q, C, or Z",
-                     (int)i + 1, op);
+            nvgPathWinding(vg, (int)v[0]);
+            break;
         }
     }
 }
@@ -159,6 +234,28 @@ void h_Path(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
         const void *data = matrix_arg(prhs[0], "Path", 7, &n, &isSingle);
         st = pnvg_path_matrix(data, n, isSingle);
         if (st != PNVG_OK)
-            pnvg_err("psychnanovg:Range", "Path: %s", pnvg_last_error());
+            pnvg_raise(st, "Path");
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* StrokeSegments                                                      */
+/* ------------------------------------------------------------------ */
+
+void h_StrokeSegments(int nlhs, mxArray *plhs[], int nrhs,
+                      const mxArray *prhs[])
+{
+    int n = 0, nc = 0, segSingle = 0, colSingle = 0, st;
+    const void *seg = matrix_arg(prhs[0], "StrokeSegments", 4, &n,
+                                 &segSingle);
+    const void *col = matrix_arg(prhs[1], "StrokeSegments", 8, &nc,
+                                 &colSingle);
+    (void)nlhs; (void)plhs; (void)nrhs;
+    if (nc != n)
+        pnvg_err("psychnanovg:Usage",
+                 "StrokeSegments: %d segments but %d color rows; the two "
+                 "matrices need one row per segment", n, nc);
+    st = pnvg_stroke_segments(seg, segSingle, col, colSingle, n);
+    if (st != PNVG_OK)
+        pnvg_raise(st, "StrokeSegments");
 }

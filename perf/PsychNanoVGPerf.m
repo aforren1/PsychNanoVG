@@ -103,6 +103,38 @@ function s = PsychNanoVGPerf(mode)
     s.polylineEndFrameNs = st.endFrameSumNs / st.frames;
     s.polylineGpuNs = st.gpuNs;
 
+    %% ---------- StrokeSegments against a per-segment MATLAB loop ----------
+    % 1000 gradient segments along a spiral. The loop is what a script
+    % without StrokeSegments writes: seven subcommands per segment.
+    nseg = 1000;
+    a = 0.02 * (0:nseg)';
+    rr = 10 + 0.1 * (0:nseg)';
+    sp = [w / 2 + rr .* cos(a), h / 2 + rr .* sin(a)];
+    spc = [mod((0:nseg)', 3) / 2, mod((1:nseg + 1)', 3) / 2, ...
+           mod((2:nseg + 2)', 3) / 2, ones(nseg + 1, 1)];
+    seg = [sp(1:end - 1, :), sp(2:end, :)];
+    col = [spc(1:end - 1, :), spc(2:end, :)];
+    segReps = 20;
+    s.segments = nseg;
+    s.strokeSegmentsTotalNs = best(@() PsychNanoVG('StrokeSegments', seg, col), ...
+                                   segReps);
+    s.strokeSegmentsPerSegmentNs = s.strokeSegmentsTotalNs / (segReps * nseg);
+    s.segmentLoopTotalNs = best(@() loop_segments(seg, col, nseg), segReps);
+    s.segmentLoopPerSegmentNs = s.segmentLoopTotalNs / (segReps * nseg);
+
+    PsychNanoVG('Stats', 'reset');
+    for r = 1:20
+        PsychNanoVG('BeginFrame', w, h);
+        PsychNanoVG('StrokeWidth', 2);
+        PsychNanoVG('LineCap', 'ROUND');
+        PsychNanoVG('StrokeSegments', seg, col);
+        PsychNanoVG('EndFrame');
+    end
+    st = PsychNanoVG('Stats');
+    s.segmentsEndFrameNs = st.endFrameSumNs / st.frames;
+    s.segmentsEndFramePerSegmentNs = s.segmentsEndFrameNs / nseg;
+    s.segmentsGpuNs = st.gpuNs;
+
     %% ---------- report ----------
     fprintf('\nPsychNanoVG perf (%s renderer, %d points, %d repetitions)\n', ...
             lower(mode), n, reps);
@@ -119,6 +151,17 @@ function s = PsychNanoVGPerf(mode)
     fprintf('  EndFrame, 10000 pt  %7.2f us\n', s.polylineEndFrameNs / 1000);
     if isGL
         fprintf('  GPU, 10000 pt       %7.2f us\n', s.polylineGpuNs / 1000);
+    end
+    fprintf('  StrokeSegments      %7.2f us per call, %6.0f ns per segment (%d segments)\n', ...
+            s.strokeSegmentsTotalNs / segReps / 1000, ...
+            s.strokeSegmentsPerSegmentNs, nseg);
+    fprintf('  per-segment loop    %7.2f us per call, %6.0f ns per segment\n', ...
+            s.segmentLoopTotalNs / segReps / 1000, s.segmentLoopPerSegmentNs);
+    fprintf('  EndFrame, segments  %7.2f us, %6.0f ns per segment\n', ...
+            s.segmentsEndFrameNs / 1000, s.segmentsEndFramePerSegmentNs);
+    if isGL
+        fprintf('  GPU, segments       %7.2f us, %6.0f ns per segment\n', ...
+                s.segmentsGpuNs / 1000, s.segmentsGpuNs / nseg);
     end
 end
 
@@ -166,6 +209,19 @@ function loop_lineto_op(px, py, n, opMoveTo, opLineTo)
     PsychNanoVG(opMoveTo, px(1), py(1));
     for k = 2:n
         PsychNanoVG(opLineTo, px(k), py(k));
+    end
+end
+
+function loop_segments(seg, col, nseg)
+    for k = 1:nseg
+        p = PsychNanoVG('LinearGradient', seg(k, 1), seg(k, 2), seg(k, 3), ...
+                        seg(k, 4), col(k, 1:4), col(k, 5:8));
+        PsychNanoVG('BeginPath');
+        PsychNanoVG('MoveTo', seg(k, 1), seg(k, 2));
+        PsychNanoVG('LineTo', seg(k, 3), seg(k, 4));
+        PsychNanoVG('StrokePaint', p);
+        PsychNanoVG('Stroke');
+        PsychNanoVG('PaintDelete', p);
     end
 end
 

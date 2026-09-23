@@ -70,7 +70,8 @@ function run_tests()
         % machine with Psychtoolbox, never on the Linux build that crashed.
         rmpath(fullfile(here, 'stub'));
         rehash_if_matlab();
-        gl = {'test_gl_shapes', 'test_gl_text', 'test_gl_target'};
+        gl = {'test_gl_shapes', 'test_gl_text', 'test_gl_target', ...
+              'test_gl_paths'};
         addpath(fullfile(here, 'gl'));
         for k = 1:numel(gl)
             feval(gl{k});

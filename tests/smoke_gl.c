@@ -10,6 +10,7 @@
  *   cmake -DPSYCHNANOVG_SMOKE_GL=ON ..
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -522,6 +523,104 @@ int main(void)
                " textTri %.0f\n", st->stats.drawCalls, st->stats.fillCount,
                st->stats.strokeCount, st->stats.textCount);
         printf("  gpuNs from the timer query pair: %.0f\n", st->stats.gpuNs);
+    }
+
+    /* Arcs in the Path matrix and gradient segments, the other phase 2
+     * paths. The matrices are column major, as the MEX gets them. */
+    {
+        /* 6 rows x 7 columns: a gauge from two arcs, then a ringed circle. */
+        static const double gauge[6 * 7] = {
+            /* code */ 6, 6, 5, 9, 9, 12,
+            /* 1 */ 100, 100, 0, 250, 250, 2,
+            /* 2 */ 110, 110, 0, 50, 50, 0,
+            /* 3 */ 60, 40, 0, 30, 15, 0,
+            /* 4 */ -3.14159265358979, 0, 0, 0, 0, 0,
+            /* 5 */ 0, -3.14159265358979, 0, 0, 0, 0,
+            /* 6 */ 2, 1, 0, 0, 0, 0};
+        static const double seg[1 * 4] = {170, 200, 310, 200};
+        static const double col[1 * 8] = {1, 0, 0, 1, 0, 0, 1, 1};
+        unsigned char *px = after;
+#define SMOKE_PX(x, y) (px + (((size_t)(SMOKE_H - 1 - (y)) * SMOKE_W + (x)) * 4))
+
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        check(pnvg_begin_frame(SMOKE_W, SMOKE_H, 1.0f) == PNVG_OK,
+              "BeginFrame for the arc frame");
+        nvgBeginPath(st->vg);
+        check(pnvg_path_matrix(gauge, 6, 0) == PNVG_OK,
+              "the Path matrix with arcs was accepted");
+        nvgFillColor(st->vg, nvgRGBAf(1.0f, 1.0f, 1.0f, 1.0f));
+        nvgFill(st->vg);
+        nvgStrokeWidth(st->vg, 8.0f);
+        check(pnvg_stroke_segments(seg, 0, col, 0, 1) == PNVG_OK,
+              "StrokeSegments was accepted");
+        check(pnvg_end_frame() == PNVG_OK, "EndFrame for the arc frame");
+        glReadPixels(0, 0, SMOKE_W, SMOKE_H, GL_RGBA, GL_UNSIGNED_BYTE, px);
+
+        check(SMOKE_PX(100, 60)[0] > 240, "the gauge arc is white at the top");
+        check(SMOKE_PX(100, 90)[0] < 16, "the inner arc leaves a hole");
+        check(SMOKE_PX(100, 160)[0] < 16, "no gauge below its center");
+        check(SMOKE_PX(250 + 22, 50)[0] > 240, "the circle row fills");
+        check(SMOKE_PX(250, 50)[0] < 16, "the winding row makes a hole");
+        check(SMOKE_PX(174, 200)[0] > 220 && SMOKE_PX(174, 200)[2] < 35,
+              "the gradient starts red");
+        check(SMOKE_PX(306, 200)[2] > 220 && SMOKE_PX(306, 200)[0] < 35,
+              "the gradient ends blue");
+#undef SMOKE_PX
+    }
+
+    /* The per-segment cost of StrokeSegments for 1000 segments: the path
+     * build in the call, and the tessellation and draw in EndFrame. */
+    {
+        enum { NSEG = 1000, NREP = 20 };
+        double *sg = (double *)malloc(sizeof(double) * NSEG * 4);
+        double *cl = (double *)malloc(sizeof(double) * NSEG * 8);
+        double build[NREP], end[NREP], gpu = 0.0;
+        int k, c;
+        if (!sg || !cl) {
+            printf("  out of memory\n");
+            return 1;
+        }
+        for (k = 0; k < NSEG; k++) {
+            double a0 = 0.02 * k, a1 = 0.02 * (k + 1);
+            double r0 = 10.0 + 0.1 * k, r1 = 10.0 + 0.1 * (k + 1);
+            sg[k] = SMOKE_W / 2 + r0 * cos(a0);
+            sg[NSEG + k] = SMOKE_H / 2 + r0 * sin(a0);
+            sg[2 * NSEG + k] = SMOKE_W / 2 + r1 * cos(a1);
+            sg[3 * NSEG + k] = SMOKE_H / 2 + r1 * sin(a1);
+            for (c = 0; c < 4; c++) {
+                cl[c * NSEG + k] = (c == 3) ? 1.0 : (double)((k + c) % 3) / 2.0;
+                cl[(c + 4) * NSEG + k] = (c == 3) ? 1.0 : (double)((k + c + 1) % 3) / 2.0;
+            }
+        }
+        for (k = 0; k < NREP; k++) {
+            double t0;
+            glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+            pnvg_begin_frame(SMOKE_W, SMOKE_H, 1.0f);
+            nvgStrokeWidth(st->vg, 2.0f);
+            nvgLineCap(st->vg, NVG_ROUND);
+            t0 = pnvg_now_ns();
+            pnvg_stroke_segments(sg, 0, cl, 0, NSEG);
+            build[k] = pnvg_now_ns() - t0;
+            pnvg_end_frame();
+            end[k] = st->stats.endFrameNs;
+            gpu = st->stats.gpuNs;
+            platform_swap();
+        }
+        check(glGetError() == GL_NO_ERROR, "no GL error after 1000 segments");
+        {
+            double b = median(build, NREP), e = median(end, NREP);
+            printf("\n  StrokeSegments, %d gradient segments, median of %d frames:\n",
+                   NSEG, NREP);
+            printf("    call (path build): %.1f us, %.0f ns per segment\n",
+                   b / 1000.0, b / NSEG);
+            printf("    EndFrame:          %.1f us, %.0f ns per segment\n",
+                   e / 1000.0, e / NSEG);
+            printf("    GPU (last pair):   %.1f us, %.0f ns per segment\n",
+                   gpu / 1000.0, gpu / NSEG);
+        }
+        free(sg);
+        free(cl);
     }
 
     /* Render target round trip, the phase 2 path, while a context is current. */

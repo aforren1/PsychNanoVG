@@ -50,7 +50,7 @@ typedef struct {
     double endFrameNs;      /* last frame */
     double endFrameMaxNs;
     double endFrameSumNs;
-    double gpuNs;           /* last readable GPU timer pair */
+    double gpuNs;           /* last readable GPU timer pair; NaN without timer queries */
     double drawCalls;
     double fillCount;
     double strokeCount;
@@ -132,16 +132,40 @@ const unsigned char *pnvg_image_transpose(const unsigned char *src,
 int pnvg_polyline(const void *data, int n, int isSingle, int close);
 int pnvg_circles(const void *data, int n, int isSingle);
 int pnvg_rects(const void *data, int n, int isSingle);
+/* Validates every row before it emits any, so a bad row leaves the current
+ * path as it was. */
 int pnvg_path_matrix(const void *data, int n, int isSingle);
 
-/* Path matrix command codes, column 1 of the Nx7 matrix form. */
+/* Path matrix command codes, column 1 of the Nx7 matrix form (SPEC 5.3).
+ * The values are part of the MATLAB API, so they never change. */
 enum pnvg_pathcode {
-    PNVG_PATH_M = 1,
-    PNVG_PATH_L = 2,
-    PNVG_PATH_Q = 3,
-    PNVG_PATH_C = 4,
-    PNVG_PATH_Z = 5
+    PNVG_PATH_M = 1,            /* x, y */
+    PNVG_PATH_L = 2,            /* x, y */
+    PNVG_PATH_Q = 3,            /* cx, cy, x, y */
+    PNVG_PATH_C = 4,            /* c1x, c1y, c2x, c2y, x, y */
+    PNVG_PATH_Z = 5,            /* none */
+    PNVG_PATH_ARC = 6,          /* cx, cy, r, a0, a1, dir */
+    PNVG_PATH_ARCTO = 7,        /* x1, y1, x2, y2, r */
+    PNVG_PATH_ELLIPSE = 8,      /* cx, cy, rx, ry */
+    PNVG_PATH_CIRCLE = 9,       /* cx, cy, r */
+    PNVG_PATH_RECT = 10,        /* x, y, w, h */
+    PNVG_PATH_ROUNDEDRECT = 11, /* x, y, w, h, r */
+    PNVG_PATH_WINDING = 12,     /* dir */
+    PNVG_PATH_MAXCODE = 12
 };
+
+/* One stroke per segment, each with a linear gradient from its first color
+ * to its second. seg is Nx4 [x0 y0 x1 y1], col is Nx8 [rgba0 rgba1], both
+ * column-major. A run of contiguous segments that all have one color is
+ * stroked as one path with a solid color. The current path is replaced and
+ * the stroke paint is put back afterwards. */
+int pnvg_stroke_segments(const void *seg, int segSingle, const void *col,
+                         int colSingle, int n);
+
+/* Reads or writes the stroke paint of the current NanoVG state, with no
+ * transform applied. nvgStrokePaint multiplies the paint by the current
+ * transform, so it cannot put a saved paint back unchanged. */
+void pnvg_nvg_stroke_paint(NVGcontext *ctx, NVGpaint *get, const NVGpaint *set);
 
 /* Render targets. Return the 1-based handle or -1. */
 int pnvg_target_create(int w, int h, int imageFlags);
@@ -152,6 +176,10 @@ int pnvg_target_delete(int rt);
 void *pnvg_target_ptr(int rt);
 
 double pnvg_now_ns(void);
+
+/* Clears the frame statistics. gpuNs starts as NaN when this context cannot
+ * measure GPU time, so a script can tell "not measured" from "0 ns". */
+void pnvg_stats_reset(void);
 
 /* Reads NanoVG's private per-frame counters. Defined in the translation unit
  * that compiles nanovg.c, because the counters live in the private struct. */

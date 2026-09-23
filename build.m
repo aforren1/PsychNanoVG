@@ -12,6 +12,11 @@ function build(target)
 %   ships with, and a static library from one cannot be linked by the other.
 %
 %   Set MEX_CMAKE_GENERATOR to override the CMake generator.
+%
+%   Set PSYCHNANOVG_TRACY=1 to compile the Tracy profiler client into the
+%   library and the zones into the MEX (SPEC 9.3). Tracy is not vendored:
+%   clone it into third_party/tracy first. Unset, the build is the normal
+%   one, and the zones compile to nothing.
 
     if nargin < 1
         target = 'build';
@@ -54,9 +59,13 @@ function build(target)
     end
 
     check_nanovg(here);
-    build_library(builddir, instdir, is_octave, false);
+    tracy = tracy_enabled();
+    if tracy
+        check_tracy(here);
+    end
+    build_library(builddir, instdir, is_octave, false, tracy);
     libfile = find_library(instdir, is_octave);
-    build_mex(libfile, is_octave);
+    build_mex(libfile, is_octave, tracy);
 
     if strcmpi(target, 'test')
         addpath(fullfile(here, 'tests'));
@@ -87,6 +96,23 @@ function check_nanovg(here)
         'See third_party/PINS.md for the pinned commit.']);
 end
 
+function tf = tracy_enabled()
+    v = lower(strtrim(getenv('PSYCHNANOVG_TRACY')));
+    tf = any(strcmp(v, {'1', 'on', 'true', 'yes'}));
+end
+
+function check_tracy(here)
+% CMake refuses too, but only after the configure step has run, and its
+% message is buried in the CMake log. This one names the fix first.
+    if exist(fullfile(here, 'third_party', 'tracy', 'public', ...
+                      'TracyClient.cpp'), 'file')
+        return;
+    end
+    error('build:tracy', ['PSYCHNANOVG_TRACY is set but Tracy is missing. Run:\n' ...
+        '  git clone --branch v0.11.1 https://github.com/wolfpld/tracy.git third_party/tracy\n' ...
+        'or unset PSYCHNANOVG_TRACY. See third_party/PINS.md.']);
+end
+
 function run_generator(here)
     uv = 'uv';
     local_uv = fullfile(getenv('USERPROFILE'), '.local', 'bin', 'uv.exe');
@@ -98,7 +124,7 @@ function run_generator(here)
     run_cmd(cmd);
 end
 
-function build_library(builddir, instdir, is_octave, smoke)
+function build_library(builddir, instdir, is_octave, smoke, tracy)
     if ~exist(builddir, 'dir'); mkdir(builddir); end
     cfg = ['cmake -E chdir ' builddir ' cmake' ...
            ' -DCMAKE_BUILD_TYPE=Release' ...
@@ -106,6 +132,13 @@ function build_library(builddir, instdir, is_octave, smoke)
            ' -DCMAKE_INSTALL_LIBDIR=lib'];
     if smoke
         cfg = [cfg ' -DPSYCHNANOVG_SMOKE_GL=ON'];
+    end
+    % Passed both ways, because the CMake cache would otherwise keep an ON
+    % from an earlier Tracy build and link the profiler into this one.
+    if tracy
+        cfg = [cfg ' -DPSYCHNANOVG_TRACY=ON'];
+    else
+        cfg = [cfg ' -DPSYCHNANOVG_TRACY=OFF'];
     end
 
     gen = getenv('MEX_CMAKE_GENERATOR');
@@ -238,7 +271,7 @@ function libfile = find_library(instdir, is_octave)
            'static library not found: %s', libfile);
 end
 
-function build_mex(libfile, is_octave)
+function build_mex(libfile, is_octave, tracy)
     % dist is split by platform because Octave calls its MEX PsychNanoVG.mex
     % everywhere, so a Linux build would otherwise replace the Windows one in
     % a working tree that is shared with WSL.
@@ -265,7 +298,29 @@ function build_mex(libfile, is_octave)
         % it reports the backend and validates opts.renderer.
         args{end+1} = '-DPNVG_GL2=1';
     end
+    if tracy
+        % The same defines as the library, or the MEX and the core would
+        % disagree about the profiler lifetime (see CMakeLists.txt).
+        args = [args, {'-DPSYCHNANOVG_TRACY=1', '-DTRACY_ENABLE', ...
+                       '-DTRACY_DELAYED_INIT', '-DTRACY_MANUAL_LIFETIME', ...
+                       '-DTRACY_NO_CRASH_HANDLER', ...
+                       '-I./third_party/tracy/public'}];
+    end
     args = [args, srcs, {libfile}];
+    if tracy
+        % The Tracy client is C++ inside a C MEX, so the C++ runtime and
+        % the libraries that the client uses have to be named here.
+        if ispc
+            args = [args, {'-lws2_32', '-ldbghelp', '-ladvapi32', '-luser32'}];
+            if is_octave
+                args{end+1} = '-lstdc++';
+            end
+        elseif ismac
+            args{end+1} = '-lc++';
+        else
+            args = [args, {'-lstdc++', '-lpthread'}];
+        end
+    end
     if ispc
         args{end+1} = '-lopengl32';
     elseif ismac
@@ -298,7 +353,8 @@ end
 
 function build_smoke(is_octave)
     d = ['build-smoke' platform_suffix()];
-    build_library(d, ['inst-smoke' platform_suffix()], is_octave, true);
+    build_library(d, ['inst-smoke' platform_suffix()], is_octave, true, ...
+                  tracy_enabled());
     if ispc
         exe = fullfile(d, 'Release', 'smoke_gl.exe');
         if ~exist(exe, 'file')

@@ -56,10 +56,15 @@ unsigned int pnvg_gl_fb_texture(void *fb);
 int pnvg_gl_current_fbo(void);
 
 /* GPU timing. The pair is read two frames later, so the first two frames
- * report 0. Returns 0 when timer queries are not available. */
+ * report 0. The same pair carries the Tracy GPU zone when Tracy is compiled
+ * in. timer_reset creates the queries, so it needs a current context. */
 void pnvg_gl_timer_begin(void);
 void pnvg_gl_timer_end(void);
 double pnvg_gl_timer_read(void);
 void pnvg_gl_timer_reset(void);
+void pnvg_gl_timer_release(void);
+/* 0 when the context has neither GL 3.3 nor GL_ARB_timer_query, for example
+ * the GL 2.1 context that Psychtoolbox makes on macOS. */
+int pnvg_gl_timer_available(void);
 
 #endif /* PNVG_GL_H */

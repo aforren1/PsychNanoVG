@@ -17,16 +17,17 @@ binding, how to test it, and how to use it.
 
 | Part | State |
 |---|---|
-| Generated API, 96 subcommands, 119 in total | Works. Tested with the null renderer under MATLAB R2023a and Octave 10.1. |
+| Generated API, 96 subcommands, 120 in total | Works. Tested with the null renderer under MATLAB R2023a and Octave 10.1. |
 | Batched paths, paints, fonts, images, `Stats` | Works. |
-| Psychtoolbox integration, `tests/gl/` | Works under MATLAB. 230 assertions pass, including shapes, text metrics, and the render target round trip. |
+| Arcs and shapes in the `Path` matrix, `StrokeSegments`, `PsychNanoVGPolylineGradient` | Works. Phase 2. Covered by the null renderer suite, by `tests/gl/test_gl_paths`, and by the native smoke test. |
+| Psychtoolbox integration, `tests/gl/` | Works under MATLAB. With the suite that needs no GPU, 336 assertions pass, including shapes, text metrics, the render target round trip, an arc gauge, and a gradient polyline. |
 | Render targets, `CreateImageFromTexture` | Works. Covered by `tests/gl/test_gl_target` and by the native smoke test. |
 | `tests/gl/` under Octave | Skipped. The Psychtoolbox `Screen` MEX for Octave does not load on the development machine. |
-| `m/PsychNanoVGDemo` | Written, not run. It holds a full screen window for six seconds. |
+| `m/PsychNanoVGDemo` | Runs under MATLAB. It holds a full screen window for six seconds by default. |
 | Linux | Works. Built and tested with Octave 6.4 on Ubuntu 22.04, and `smoke_gl` runs under Xvfb with Mesa llvmpipe. |
-| macOS on Apple silicon | Built and tested on the `macos-latest` runner, with the GL2 backend. The three macOS jobs are new and carry `continue-on-error` until the first green run. |
+| macOS on Apple silicon | Built and tested on the `macos-latest` runner, with the GL2 backend. The GL 2.1 context has no GPU timer unless it offers `GL_ARB_timer_query`, so `gpuNs` can be NaN there. |
 | macOS on Intel | Not covered. |
-| Tracy | A CMake option that is off. Only the dispatch zone is wired up. |
+| Tracy | Works when you turn it on. CPU zones for every subcommand and the hot paths, and a GPU zone per frame. Built and captured on Windows with MSVC and with Octave's MinGW. Not tried on Linux or macOS. |
 
 See the last section of `SPEC.md` for the full list of deviations.
 
@@ -211,7 +212,8 @@ error inside a wrapped region still leaves Psychtoolbox in 2D drawing mode.
 `Screen('BeginOpenGL')` fail later for a reason that is harder to read.
 
 `PsychNanoVGDemo` shows more: a gradient ring, a Bezier trajectory, text
-placed with `TextBounds`, and a cached render target.
+placed with `TextBounds`, a cached render target, a gauge drawn from arcs,
+and a wave with one color per vertex.
 
 ### The low-level form
 
@@ -292,9 +294,10 @@ subcommands do the loop in C and cost one call:
 |---|---|
 | `Polyline` | Nx2, one `MoveTo` and N-1 `LineTo` |
 | `Polygon` | Nx2, closed |
-| `Path` | a cell array of `{'M', x, y}` and so on, or an Nx7 matrix |
+| `Path` | an Nx7 matrix of commands, or a cell array such as `{{'M', x, y}, {'Arc', cx, cy, r, a0, a1, 'CW'}}` |
 | `Circles` | Nx3, for dot fields |
 | `Rects` | Nx4 |
+| `StrokeSegments` | Nx4 segments and Nx8 color pairs, one gradient stroke per segment |
 
 `perf/PsychNanoVGPerf` measures the difference. On the development machine
 (Intel Iris Xe, 1,000 points, null renderer, the faster of two passes):
@@ -319,6 +322,65 @@ native smoke test reports an `EndFrame` median of 45 us for a frame that holds
 a filled circle, a stroked rectangle, a 10,000 point polyline, and a line of
 text.
 
+### Draw arcs in one call
+
+Each row of the `Path` matrix is one command: a code in column 1, then the
+arguments of the NanoVG function, zero padded to 7 columns. Angles are
+radians. y points down, so an angle that increases turns clockwise.
+
+| Code | Command | Columns 2 to 7 |
+|---|---|---|
+| 1 | MoveTo | x, y |
+| 2 | LineTo | x, y |
+| 3 | QuadTo | cx, cy, x, y |
+| 4 | BezierTo | c1x, c1y, c2x, c2y, x, y |
+| 5 | ClosePath | |
+| 6 | Arc | cx, cy, r, a0, a1, dir |
+| 7 | ArcTo | x1, y1, x2, y2, r |
+| 8 | Ellipse | cx, cy, rx, ry |
+| 9 | Circle | cx, cy, r |
+| 10 | Rect | x, y, w, h |
+| 11 | RoundedRect | x, y, w, h, r |
+| 12 | PathWinding | dir |
+
+`dir` is 1 for counterclockwise or solid, and 2 for clockwise or hole. This
+gauge band is one call:
+
+```matlab
+band = [6 cx cy 100 0.75*pi 2.25*pi 2;   % outer arc, clockwise
+        6 cx cy  80 2.25*pi 0.75*pi 1;   % inner arc back
+        5 0 0 0 0 0 0];                  % close
+PsychNanoVG('BeginPath');
+PsychNanoVG('Path', band);
+PsychNanoVG('Fill');
+```
+
+`Path` checks every row before it draws any. A bad code or a bad `dir` raises
+`psychnanovg:Range`, names the row, and leaves the path as it was.
+
+### Draw a line with one color per vertex
+
+`PsychNanoVGPolylineGradient(xy, rgba)` takes an Nx2 polyline and Nx4 colors.
+It draws each segment with a linear gradient from the color of its first
+vertex to the color of its second, in one MEX call to `StrokeSegments`:
+
+```matlab
+PsychNanoVG('StrokeWidth', 6);
+PsychNanoVG('LineCap', 'ROUND');      % closes the gaps at the corners
+PsychNanoVGPolylineGradient(xy, rgba);
+```
+
+Each gradient segment is its own stroke, so there are no joins between
+segments; round caps hide that. Segments in a row that all have one color
+become one stroke with real joins. The function replaces the current path
+and keeps the stroke paint.
+
+For 1,000 segments the call costs about 0.3 us per segment with the null
+renderer and 0.5 us with the GL renderer, against 14 to 26 us for the same
+work written as seven subcommands per segment. The GPU then takes about 6.5
+us per segment on Intel Iris Xe, because each stroke is its own draw. SPEC
+section 14.7 has the full table.
+
 ## Measure
 
 `Stats` is always compiled in. It counts every subcommand and every frame.
@@ -330,6 +392,45 @@ text.
     s.drawCalls         % NanoVG counters for the last frame
     s.commands          % per subcommand: name, calls, totalNs, maxNs
     PsychNanoVG('Stats', 'reset');
+
+`gpuNs` is NaN when the context cannot measure GPU time: with the null
+renderer, and on a GL context below 3.3 that has no `GL_ARB_timer_query`.
+
+`endFrameNs` times NanoVG's own work. The graphics driver can submit the
+commands a little later, still inside `EndFrame`, so for heavy frames the
+`EndFrame` row of `s.commands` is the better measure of what the frame costs
+the CPU.
+
+### Profile with Tracy
+
+[Tracy](https://github.com/wolfpld/tracy) shows every subcommand as a CPU
+zone and every frame as a GPU zone. It is not part of a normal build.
+
+1. Clone the tested version into `third_party/tracy`:
+
+       git clone --branch v0.11.1 https://github.com/wolfpld/tracy.git third_party/tracy
+
+2. Build with the environment variable set:
+
+       set PSYCHNANOVG_TRACY=1
+       matlab -batch build
+
+   That is the Windows command prompt. In PowerShell, set it with
+   `$env:PSYCHNANOVG_TRACY = '1'`. On Linux and macOS, write
+   `PSYCHNANOVG_TRACY=1 matlab -batch build`. Octave builds the same way.
+   `Version().build` then ends in `tracy=1`. Without the variable, the next
+   build is a normal one again.
+
+3. Start the Tracy profiler, or `tracy-capture -o run.tracy`, and run the
+   script. The profiler starts with the first `PsychNanoVG` call and stops
+   when MATLAB unloads the MEX file.
+
+The GPU zone "NanoVG frame" spans `BeginFrame` to `EndFrame` and uses the same
+timer queries as `gpuNs`. On a context without timer queries there is no GPU
+zone. `tracy-csvexport` exports the CPU zones.
+
+If `PSYCHNANOVG_TRACY` is set and `third_party/tracy` is missing, `build`
+stops with `build:tracy` and prints the clone command.
 
 ## Colors, coordinates, and text
 
@@ -352,11 +453,12 @@ text.
 | `src/PsychNanoVG.c` | The MEX entry point, dispatch, marshaling, lifecycle. |
 | `src/core/` | The NanoVG-facing layer, with no MATLAB types. The smoke test links it. |
 | `src/pnvg_gl.c` | glad, the NanoVG GL backend, the proc loader, GL state save and restore. |
-| `src/pnvg_batch.c` | `Polyline`, `Polygon`, `Path`, `Circles`, `Rects`. |
+| `src/pnvg_batch.c` | `Polyline`, `Polygon`, `Path`, `Circles`, `Rects`, `StrokeSegments`. |
+| `src/pnvg_profiler.h`, `src/core/pnvg_tracy.cpp` | The Stats switch and the Tracy zones. The C++ file is compiled only with Tracy. |
 | `src/pnvg_targets.c` | Render targets and `CreateImageFromTexture`. |
 | `src/gen_dispatch.c`, `src/gen_enums.c` | Generated. Committed. |
 | `gen/generate.py` | The generator. Run it with `build gen`. |
-| `m/` | The convenience layer, help text, opcodes, the path setup, the font search, the demo. |
+| `m/` | The convenience layer, help text, opcodes, the path setup, the font search, the gradient polyline, the demo. |
 | `tests/` | The suite that needs no GPU, plus `tests/gl/` and `smoke_gl.c`. |
 | `perf/` | The timings of SPEC 9.4. |
 

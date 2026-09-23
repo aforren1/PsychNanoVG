@@ -1,6 +1,6 @@
 # PsychNanoVG specification
 
-Status: implemented through phase 1, with the phase 2 render targets and `CreateImageFromTexture` delivered early. Specification version 0.1, 2026-09-22; section 14 records every deviation.
+Status: implemented through phase 2. Specification version 0.1, 2026-09-22; section 14 records every deviation. The phase 2 additions to sections 5 and 7 are marked "phase 2".
 
 `PsychNanoVG` is a MEX binding of NanoVG for MATLAB and GNU Octave. NanoVG is a
 small antialiased 2D vector graphics library on OpenGL. The binding draws
@@ -276,7 +276,8 @@ Grouped as in `nanovg.h`:
 |---|---|---|
 | Polyline | `PsychNanoVG('Polyline', xy [, close=false])` | `xy` is Nx2 double. `MoveTo` on the first row, `LineTo` on the rest, `ClosePath` when requested. Appends to the current path. |
 | Polygon | `PsychNanoVG('Polygon', xy)` | `Polyline` with close. |
-| Path | `PsychNanoVG('Path', cmds)` | `cmds` is a cell array of `{'M', x, y}`, `{'L', x, y}`, `{'Q', cx, cy, x, y}`, `{'C', c1x, c1y, c2x, c2y, x, y}`, `{'Z'}`, or an Nx7 double matrix with a command code in column 1 and zero-padded arguments. The matrix form is the fast path. |
+| Path | `PsychNanoVG('Path', cmds)` | `cmds` is a cell array of `{'M', x, y}`, `{'L', x, y}`, `{'Q', cx, cy, x, y}`, `{'C', c1x, c1y, c2x, c2y, x, y}`, `{'Z'}`, or an Nx7 double matrix with a command code in column 1 and zero-padded arguments. The matrix form is the fast path. Phase 2: arcs, shapes, and the winding go in both forms, so a path with arcs is one call. Section 7.4 gives the encoding. |
+| StrokeSegments | `PsychNanoVG('StrokeSegments', seg, rgba)` | Phase 2. `seg` is Nx4 `[x0 y0 x1 y1]`, `rgba` is Nx8 `[r0 g0 b0 a0 r1 g1 b1 a1]`. One stroke per segment with an `nvgLinearGradient` paint from the first color to the second, all in one call. Section 7.4 gives the rules. |
 | Circles | `PsychNanoVG('Circles', cxyr)` | Nx3 matrix, one `Circle` per row, one path. For dot fields. |
 | Rects | `PsychNanoVG('Rects', xywh)` | Nx4 matrix. |
 | CreateImageFromTexture | `img = PsychNanoVG('CreateImageFromTexture', glTexId, w, h [, flags])` | `nvglCreateImageFromHandleGL3`. Wraps a PTB texture's GL id from `Screen('GetOpenGLTexture')` as a NanoVG image, for `ImagePattern`. |
@@ -299,7 +300,8 @@ Grouped as in `nanovg.h`:
 | `m/PsychNanoVGGL.m` | `[...] = PsychNanoVGGL(vg, subcommand, ...)`. One OpenGL subcommand inside one region. Passes through when a region is already open. |
 | `m/PsychNanoVGClose.m` | `PsychNanoVGClose(vg)`. `Shutdown` inside one region. Safe twice, and safe after the window is closed. |
 | `m/PsychNanoVGFonts.m` | `FindSystemFont` implementation per OS. |
-| `m/PsychNanoVGDemo.m` | Demo: antialiased ring stimulus with gradient edge, a Bezier trajectory, text with metrics, and a cached render target. |
+| `m/PsychNanoVGPolylineGradient.m` | Phase 2. `[seg, col] = PsychNanoVGPolylineGradient(xy, rgba)`. A polyline with one color per vertex: builds the segment and color matrices of `StrokeSegments` from an Nx2 polyline and Nx4 colors, and draws them in one call. |
+| `m/PsychNanoVGDemo.m` | Demo: antialiased ring stimulus with gradient edge, a Bezier trajectory, text with metrics, a cached render target, and (phase 2) a gauge built from arcs and a wave with one color per vertex. |
 
 Every one of the four uses `Screen('EndOpenGL')` on the error path as well as
 on the normal path. A MEX error inside a wrapped region therefore still
@@ -392,6 +394,63 @@ of it is wanted.
 - `nvgCreateFontMem` with `freeData = 1`; the MEX always copies and passes 0.
 - The GLES2 and GLES3 backends.
 
+### 7.4 Batched matrix encodings (phase 2)
+
+The batched subcommands take column-major double or single matrices, the
+layout that MATLAB stores. The handler checks the class and the column count
+once per call. Inside the loop there is no allocation and no call back into
+MATLAB.
+
+`Path` matrix form. Each row is one command: the code in column 1 and the
+arguments in columns 2 to 7, in the order of the NanoVG function, zero
+padded. Angles are radians. y points down, so an angle that increases turns
+clockwise on the screen.
+
+| Code | Cell name | NanoVG call | Columns 2 to 7 |
+|---|---|---|---|
+| 1 | `M` | `nvgMoveTo` | x, y |
+| 2 | `L` | `nvgLineTo` | x, y |
+| 3 | `Q` | `nvgQuadTo` | cx, cy, x, y |
+| 4 | `C` | `nvgBezierTo` | c1x, c1y, c2x, c2y, x, y |
+| 5 | `Z` | `nvgClosePath` | none |
+| 6 | `Arc` | `nvgArc` | cx, cy, r, a0, a1, dir |
+| 7 | `ArcTo` | `nvgArcTo` | x1, y1, x2, y2, r |
+| 8 | `Ellipse` | `nvgEllipse` | cx, cy, rx, ry |
+| 9 | `Circle` | `nvgCircle` | cx, cy, r |
+| 10 | `Rect` | `nvgRect` | x, y, w, h |
+| 11 | `RoundedRect` | `nvgRoundedRect` | x, y, w, h, r |
+| 12 | `Winding` | `nvgPathWinding` | dir |
+
+Rules:
+
+- The codes never change meaning. A new command gets the next free code.
+- `dir` is 1 (`NVG_CCW`, `NVG_SOLID`) or 2 (`NVG_CW`, `NVG_HOLE`). In the
+  cell form it can also be a constant name, as for the `Arc` and
+  `PathWinding` subcommands.
+- The handler validates column 1, and the `dir` of rows 6 and 12, for every
+  row before it sends any row to NanoVG. A code that is not an integer from 1
+  to 12, or a `dir` that is not 1 or 2, raises `psychnanovg:Range` and names
+  the row. The path is then unchanged. The other arguments are not checked,
+  the same as for the per-call subcommands.
+- The cell form accepts the names in the table, in any case. A wrong
+  argument count raises `psychnanovg:Usage`.
+
+`StrokeSegments` form. Row i of `seg` is the segment `[x0 y0 x1 y1]`, and row
+i of `rgba` holds its two colors, `[r0 g0 b0 a0 r1 g1 b1 a1]`.
+
+- The two matrices have the same number of rows, or `psychnanovg:Usage`. They
+  can differ in class.
+- Each segment is `nvgBeginPath`, `nvgMoveTo`, `nvgLineTo`,
+  `nvgStrokePaint(nvgLinearGradient(x0, y0, x1, y1, c0, c1))`, and
+  `nvgStroke`. The stroke uses the current width, cap, join, transform,
+  and global alpha.
+- A run of contiguous segments, where each starts at the end of the one
+  before and all have one color at both ends, becomes one path with one
+  `nvgStrokeColor` and one `nvgStroke`. The run then has real joins and one
+  draw call.
+- The current path is replaced. The stroke paint that was current before the
+  call is current again after it.
+
 ## 8. State, lifecycle, and error handling
 
 ### 8.1 State
@@ -458,7 +517,8 @@ Always compiled unless `PSYCHNANOVG_STATS=0`. Per subcommand `calls`,
 `totalNs`, `maxNs`. Per frame: `endFrameNs` last, max, sum; `gpuNs` from a
 `GL_TIMESTAMP` query pair read two frames later; `drawCalls`, `fillCount`,
 `strokeCount`, `textCount`, and `vertexCount` from NanoVG's internal counters
-when built with `NANOVG_STATS`.
+when built with `NANOVG_STATS`. Phase 2: `gpuNs` is NaN when the context has
+no timer queries (section 14.7).
 
 ### 9.3 Tracy
 
@@ -594,21 +654,22 @@ section 9.4.
 | Phase | Content |
 |---|---|
 | 1 | Lifecycle, generator, all generated subcommands, batched paths, paints, fonts, images from files and arrays, `Stats`, null-renderer tests, GL tests, demo. |
-| 2 | Render targets and `CreateImageFromTexture` (both delivered in phase 1), Tracy GPU zones, `Path` matrix form with arcs, per-vertex color polylines through `LinearGradient` helpers. |
+| 2 | Render targets and `CreateImageFromTexture` (both delivered in phase 1), Tracy GPU zones, `Path` matrix form with arcs, per-vertex color polylines through `LinearGradient` helpers. Delivered; section 14.7 records the differences. |
 | 3 | Multiple contexts for multiple PTB windows, GLES backends if PTB on embedded Linux needs them. |
 
 ## 14. Deviations from version 0.1
 
-Phase 1 is implemented. This section records every place where the
+Phases 1 and 2 are implemented. This section records every place where the
 implementation differs from sections 1 to 13, and the reason. Sections 1 to 13
-are unchanged.
+hold the version 0.1 text, except the phase 2 additions to sections 5, 7, 9.2,
+and 13, which are marked "phase 2". Section 14.7 holds the phase 2 rows.
 
 ### 14.1 Dependencies and build
 
 | Deviation | Reason |
 |---|---|
-| NanoVG is a git submodule under `third_party/nanovg`, pinned at `ce3bf745eb2d2dbc14a50bf2446783f691ac4353` (2026-02-19) as recorded in `third_party/PINS.md`. Tracy is not vendored. | The repository did not exist while phase 1 was written, so NanoVG was a plain clone until it was registered as a submodule at the same commit on 2026-09-22. Tracy stays out until `PSYCHNANOVG_TRACY` is wired. |
-| Tracy is not cloned. `PSYCHNANOVG_TRACY` stays OFF, and the only zone in the source is `PNVG_ZONE("dispatch")` in `mexFunction`. The `TracyCGpuZone` around `nvgEndFrame` of section 9.3 is not written. | The zone macros compile to nothing while the option is off, so they cost nothing now and the CMake path can be tested later without touching the sources. GPU time already comes from the timer query pair of section 9.2, so the Tracy GPU zone adds nothing in phase 1. |
+| NanoVG is a git submodule under `third_party/nanovg`, pinned at `ce3bf745eb2d2dbc14a50bf2446783f691ac4353` (2026-02-19) as recorded in `third_party/PINS.md`. Tracy is not vendored. | The repository did not exist while phase 1 was written, so NanoVG was a plain clone until it was registered as a submodule at the same commit on 2026-09-22. Tracy is optional and large, and a build without it must not need it, so a developer clones it into `third_party/tracy` by hand (section 14.7). |
+| Phase 1 only: `PSYCHNANOVG_TRACY` stayed OFF, and the only zone was `PNVG_ZONE("dispatch")`. Phase 2 wires the option; section 14.7 describes the zones. | The zone macros compile to nothing while the option is off, so they cost nothing and the CMake path could be tested later without touching the sources. |
 | glad is generated for `gl:compatibility=3.3` with no extensions. | Every GL symbol that `nanovg_gl.h` and `nanovg_gl_utils.h` use is core in 3.3, and so is `glQueryCounter` for the GPU timer. The full extension set would make the header five times larger for no gain. |
 | `mex` gets `-R2017b` under MATLAB only. | `-R2017b` names the API that the code already uses, so it states the intent under MATLAB. Octave's `mex` does not accept the flag. |
 | `build.m` passes `-DPNVG_OCTAVE=1` under Octave. | Section 6.3 needs different string marshaling for each engine, and no standard macro tells a MEX file which engine compiled it. |
@@ -621,7 +682,7 @@ are unchanged.
 
 | Deviation | Reason |
 |---|---|
-| 96 generated subcommands and 23 hand-written ones, 119 in total. Section 1.2 estimates about 95 generated. | The count includes `CreateImageMem`, `CreateFontMemAtIndex`, and the three composite operation setters, which section 7.3 does not exclude. |
+| 96 generated subcommands and 24 hand-written ones, 120 in total (119 before phase 2 added `StrokeSegments`). Section 1.2 estimates about 95 generated. | The count includes `CreateImageMem`, `CreateFontMemAtIndex`, and the three composite operation setters, which section 7.3 does not exclude. |
 | `nvgBeginFrame`, `nvgEndFrame`, and `nvgCancelFrame` are excluded from generation. | Section 5.1 gives all three hand-written handlers that also save and restore GL state, set the viewport, drain GL errors, and record statistics. Two commands cannot share one name. The generator now refuses a duplicate name instead of emitting one. |
 | `nvgResetFallbackFonts` is excluded from generation and hand-written. | It passes the result of `nvgFindFont` straight to `fonsResetFallbackFont`, which indexes `stash->fonts` with it and never checks it. An unknown family name is -1 there, so the generated wrapper turned a typo in a script into a process crash. The hand-written handler resolves the name and raises `psychnanovg:Handle`. This was found by the generated marshaling test. |
 | Font handles are validated the same way section 8.1 validates image handles, with a high water mark instead of a bitset. `int font`, `int baseFont`, and `int fallbackFont` all go through the check, and a bad handle raises `psychnanovg:Handle`. | `fonsAddFallbackFont` and `fonsResetFallbackFont` dereference `stash->fonts[id]` with no check of their own, and an unused slot holds NULL. Section 8.4 requires the MEX to validate handles before it calls NanoVG; section 8.1 lists only images. Fontstash ids count up from 0 and are never freed, so one count is enough. |
@@ -642,7 +703,7 @@ are unchanged.
 | Deviation | Reason |
 |---|---|
 | Render targets and `CreateImageFromTexture` are implemented now, although section 13 puts them in phase 2. | `nvgluCreateFramebuffer` and `nvglCreateImageFromHandleGL3` are already in the vendored headers, so the work was small, and the native smoke test can exercise them while a GL context is current. |
-| The `Path` matrix form covers M, L, Q, C, and Z, with command codes 1 to 5. Arcs are not in the matrix form. | Section 13 puts arcs in the matrix form in phase 2. `Arc` and `ArcTo` are ordinary subcommands. |
+| Phase 1 only: the `Path` matrix form covered M, L, Q, C, and Z, codes 1 to 5. Phase 2 adds codes 6 to 12 (section 7.4). | Section 13 put arcs in the matrix form in phase 2. |
 | `vertexCount` in `Stats` is the sum of NanoVG's fill, stroke, and text triangle counts, times three. | NanoVG counts triangles, not vertices. The three counts are reported separately as well, so nothing is lost. |
 | Every script that opens a window, that is `tests/gl/*.m`, `perf/PsychNanoVGPerf('gl')`, and `m/PsychNanoVGDemo.m`, opens it through `tests/gl/ptb_test_window.m`. That helper sets `Screen('Preference', 'SkipSyncTests', 2)` and `Screen('Preference', 'VisualDebugLevel', 0)` before `PsychImaging('OpenWindow')`, and the tests ask it for a 640x480 windowed target. This is an addition to section 11.2. | An unattended `run_tests` must not stop for the display sync report or the welcome splash, and a 640x480 window cannot pass the sync tests in any case. One helper keeps the two preferences in one place, so a later change reaches every script at once. |
 | `tests/gl/` needs a render target to be cleared before it is drawn into. `nvgluCreateFramebuffer` calls `nvgCreateImageRGBA` with a NULL pixel pointer, so the texture holds whatever was in that memory. The tests and the demo clear it with `glClear` through mogl. | Clearing inside `RenderTargetBind` would be a policy that section 5.3 does not describe, and a caller that draws a full-bleed background does not need the clear. The first version of `test_gl_target` missed this and reported a mismatch that was uninitialized memory, not a flip. |
@@ -687,7 +748,56 @@ Psychtoolbox `Screen` MEX does not load.
 |---|---|
 | `tests/gl/` under Octave | Not run. The Psychtoolbox `Screen.mex` for Octave on this machine fails to load with Windows error 126. `run_tests` reports the directory as skipped. Under MATLAB the same tests run and pass. |
 | Linux | Built and tested. Octave 6.4.0 on Ubuntu 22.04 under WSL passes the same 201 assertions as Octave on Windows, and `smoke_gl` passes all of its checks under Xvfb with llvmpipe. |
-| macOS | Nothing has been run. The proc loader for the OpenGL framework and the GL2 backend that section 4.1 requires there are written but have never been compiled. |
-| The GitHub Actions workflow | Written against the shape of `mex-msgpack`, and its YAML parses, but no run has taken place. There is no repository to push it to yet. |
-| `m/PsychNanoVGDemo.m` | Written to section 11.3. Not run against a display, because it holds a full screen window for six seconds. |
+| macOS | Built and tested by CI on Apple silicon (section 12.3). No one on the team has run it on a Mac with a display. The phase 2 GPU timer and Tracy GPU zone code is compiled there but not run against a Psychtoolbox window. |
+| The GitHub Actions workflow | Runs on every push, green on Linux, Windows, and macOS at commit 33888c1. |
+| `m/PsychNanoVGDemo.m` | Run for two seconds under MATLAB R2023a on 2026-09-22, with the phase 2 gauge and wave. It exits without an error and prints the `EndFrame` line. Not inspected by eye for more than that. |
 | Render target binds nest: the core keeps a stack of bound targets, and `RenderTargetBind` refuses a target that is already on it. Section 5.3 described one bound target at a time. | The macOS smoke test binds an offscreen target for the whole run because a drawable-less CGL context has no default framebuffer, and the render target round trip inside it used to overwrite the single "bound target" record, so the outer unbind reported nothing bound. `RenderTargetUnbind` now returns to the framebuffer that was current before the innermost bind, `RenderTargetDelete` of a bound target unwinds to it, binding the same target twice raises `psychnanovg:FrameState`, and the MEX handlers map the core status codes onto the section 5.5 identifiers instead of assuming `Handle`. `tests/gl/test_gl_target.m` covers the nesting. |
+
+### 14.7 Phase 2
+
+Phase 2 was implemented on 2026-09-22. The rows below record where it differs
+from sections 5, 7, 9, and 11, or adds to them.
+
+| Deviation | Reason |
+|---|---|
+| A new hand-written subcommand, `StrokeSegments` (sections 5.3 and 7.4). Section 13 asks for per-vertex color polylines "through `LinearGradient` helpers" and names no subcommand. | Before phase 2, one gradient segment took seven subcommands: `LinearGradient`, `BeginPath`, `MoveTo`, `LineTo`, `StrokePaint`, `Stroke`, and `PaintDelete`. For 1,000 segments that loop costs 14.5 us per segment under MATLAB with the GL renderer and 111 us per segment under Octave. `StrokeSegments` does the same work in C for all segments in one call. |
+| The table now has 120 subcommands. The opcodes of the 27 subcommands whose names sort after `StrokeSegments`, from `StrokeWidth` to `Version`, went up by one. | The opcode is the position in the table that is sorted by name (section 9.1). A script that uses `PsychNanoVGOp` gets the new numbers. A script that hard-codes an opcode number must change. |
+| The `Path` matrix form has codes 6 to 12: `Arc`, `ArcTo`, `Ellipse`, `Circle`, `Rect`, `RoundedRect`, and `Winding`. Section 13 asks only for arcs. | A gauge or a ring needs a hole, and a hole needs `Winding` after the inner shape. The four shape commands are one line each in the handler. With all of them, any path that the per-call subcommands can build is one `Path` call. |
+| The cell form names the new commands by the NanoVG name, such as `{'Arc', ...}`, in any case, not by one letter. A name must now match a whole entry of the section 7.4 table. Phase 1 read only the first letter, so `{'MoveTo', x, y}` worked as `M`; it now raises `psychnanovg:Usage`. | The single letters of phase 1 follow SVG. SVG's `A` is an elliptical arc between two end points, which is not `nvgArc`, and a second meaning for a known letter would mislead. A first-letter match cannot tell `C` from `Circle`. |
+| `Path` validates every row of the matrix before it sends one to NanoVG. In phase 1 the rows before a bad row were already in the path when the error came. The error identifier is still `psychnanovg:Range`, and the message names the row. | An error now leaves the path as it was, and the drawing loop has no error branch. The check is one pass over column 1, which costs little next to the NanoVG calls. `tests/test_paths.m` used code 9 as its example of a bad code; code 9 is now `Circle`, so the test uses 99. |
+| `StrokeSegments` puts the caller's stroke paint back through a small accessor in `src/core/pnvg_nanovg_unit.c`, not through `nvgSave` and `nvgRestore`. | `nvgStrokePaint` multiplies the paint by the current transform, so it cannot restore a saved paint unchanged. `nvgSave` does nothing when the state stack is full, and the matching `nvgRestore` would then remove the caller's own state. |
+| `StrokeSegments` strokes a run of contiguous segments that have one color as one path with `nvgStrokeColor`. | That is the "minimal set of strokes" for a polyline: a gradient buys nothing along one color, and one path gives the run real joins and one draw call instead of one per segment. |
+| `PsychNanoVGPolylineGradient` leaves out segments of zero length. Gradient segments are separate strokes, so they have no joins between them. The help text tells the caller to set `LineCap` to `ROUND`. | A repeated vertex gives a gradient no direction. A join needs one path, and one path can have only one paint. |
+| `Stats` reports `gpuNs` as NaN when the context cannot measure GPU time: the null renderer, and a GL context below 3.3 without `GL_ARB_timer_query`. It was 0 in phase 1. The first two frames on a context with timer queries still report 0. | 0 ns is a possible measurement; NaN is not. A script can now tell "not measured" from "fast". |
+| The timer queries are created in `Init` and deleted in `Shutdown`. On a context below 3.3 that has `GL_ARB_timer_query`, the two entry points are loaded by hand. `CancelFrame` closes the query pair that `BeginFrame` opened. | In phase 1 the queries were created at the first `BeginFrame` and never deleted, so every `Init` left six query objects behind. glad loads the GL 3.3 entry points only from a 3.3 context, and the extension uses the same names. Without the close, a cancelled frame left a Tracy GPU zone with no end. |
+| Tracy uses the C API, `___tracy_emit_gpu_*_serial`, not `TracyCGpuZone`. The GPU zone is named "NanoVG frame" and spans `BeginFrame` to `EndFrame`, from the same `GL_TIMESTAMP` query pair that gives `gpuNs`. Section 9.3 puts the zone around `nvgEndFrame` only. | `TracyC.h` has no GPU zone macro; its GPU functions take query ids that the caller manages, and the section 9.2 ring already manages them. NanoVG issues all of its GL work inside `nvgEndFrame`, so the longer span holds the same GPU work, and the zone costs no extra query. |
+| With Tracy compiled in, `EndFrame` waits for a query pair that is not ready when its slot is about to be written again. Without Tracy it drops the pair, as in phase 1. | Tracy was told that the zone began and ended, and it waits for both timestamps. A dropped pair leaves a GPU zone with no end in the capture. Two frames of latency make the wait rare. |
+| `src/core/pnvg_tracy.cpp` is a C++ file of one function, compiled only with Tracy. It takes the GPU context id from Tracy's shared counter. | The C API has no call that hands out a GPU context id, and a fixed id can collide with another GPU context in the same process. |
+| The profiler uses `TRACY_MANUAL_LIFETIME` and `TRACY_DELAYED_INIT`. It starts at the first MEX call, and at `pnvg_init` for `smoke_gl`, and stops in `mexAtExit`. | The profiler threads run code inside the MEX file. Static constructors would start them at load time and leave them running while MATLAB unloads the file. |
+| Tracy is compiled with `TRACY_NO_CRASH_HANDLER`. | MATLAB's JVM raises access violations on purpose and handles them. With a capture connected, Tracy's crash handler took one of them for a crash, suspended every other thread, and MATLAB hung in `Screen('CloseAll')`. Without a capture the handler does nothing, which is why the test suite did not show it. |
+| The CPU zones carry the subcommand name, from a static table of source locations, instead of one "dispatch" zone. The core adds zones for `Polyline`, `Circles`, `Rects`, `PathMatrix`, `StrokeSegments`, `ImageTranspose`, `nvgEndFrame`, "GPU timer", and "GL restore and error drain". Text has no zone of its own: the `Text`, `TextBox`, and other text subcommands get their zone from the dispatcher. | One name per subcommand is what a timeline needs, and the table is filled once, so the per-call path does not allocate. The generated text handlers are not edited, because the dispatcher zone already covers the whole handler. |
+| The zones go through a stack in the core, and `pnvg_err` closes every open zone before it raises. `mexFunction` also closes any zone that is still open when it starts. | `mexErrMsgIdAndTxt` does not return, so a plain `TracyCZoneEnd` after the handler never runs on an error, and the zones of the thread would nest deeper with every error. |
+| `build.m` turns Tracy on with the environment variable `PSYCHNANOVG_TRACY=1`, and passes `-DPSYCHNANOVG_TRACY=ON` or `OFF` to CMake on every build. When Tracy is missing, `build.m` raises `build:tracy` before CMake runs, and CMake stops with `FATAL_ERROR`. Both messages give the clone command. Tracy is not vendored; v0.11.1 is the tested version. | Section 10.2 names the option but not how `build.m` sets it. The explicit OFF stops the CMake cache from keeping an ON from an earlier build. |
+| `Stats.endFrameNs` times `nvgEndFrame` only, as in phase 1. The driver can do its command submission in the first GL call after `nvgEndFrame`: the timer query, or the error drain when there is no timer. For 500 gradient segments on Intel Iris Xe that is 1.0 to 1.5 ms, which appears in the `EndFrame` entry of `s.commands` but not in `endFrameNs`. | A finding, not a change. With the GPU timer turned off by hand, the same time moved to the error drain, and the whole frame did not get faster, so the timer adds no cost of its own. The "GPU timer" and "GL restore and error drain" Tracy zones show where the time goes. |
+| `tests/gl/test_gl_paths.m` is a fourth GL test file. Section 11.2 names three. `tests/smoke_gl.c` also draws an arc gauge and a gradient segment, checks their pixels, and times 1,000 gradient segments. | The phase 2 paths need a pixel check. The smoke test gives them one under Octave and on the Linux and macOS CI runners, where Psychtoolbox does not run. |
+
+Measured per-segment cost of `StrokeSegments`, 1,000 gradient segments of 2
+pixels width on a spiral, Intel Iris Xe, 2026-09-22. The numbers move by a
+factor of two between runs on a laptop.
+
+| Measurement | Per segment |
+|---|---|
+| The call, null renderer, MATLAB R2023a (`perf/PsychNanoVGPerf`) | 265 ns |
+| The call, null renderer, Octave 10.1 | 315 ns |
+| The same work as a loop of seven subcommands, null renderer, MATLAB / Octave | 26 us / 111 us |
+| The call, GL renderer, MATLAB (`PsychNanoVGPerf('gl')`) | 533 ns |
+| The same loop, GL renderer, MATLAB | 14.5 us |
+| `endFrameNs`, GL renderer, MATLAB | 405 ns |
+| GPU time from the timer pair, GL renderer, MATLAB | 6.5 us |
+| The call / `EndFrame` / GPU in `smoke_gl`, MSVC build | 240 to 600 ns / 190 to 410 ns / 2.7 to 5.3 us |
+
+The call cost is NanoVG's stroke tessellation, which runs inside
+`nvgStroke`. The GPU cost is mostly per draw call: with `NVG_STENCIL_STROKES`
+each stroke is three draws. A script that needs thousands of segments per
+frame and no overlap correction can turn `stencilStrokes` off in `Init`,
+which draws each stroke in one pass.

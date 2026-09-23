@@ -26,6 +26,7 @@ extern void h_RenderTargetUnbind(int, mxArray **, int, const mxArray **);
 extern void h_ResetFallbackFonts(int, mxArray **, int, const mxArray **);
 extern void h_Shutdown(int, mxArray **, int, const mxArray **);
 extern void h_Stats(int, mxArray **, int, const mxArray **);
+extern void h_StrokeSegments(int, mxArray **, int, const mxArray **);
 extern void h_Version(int, mxArray **, int, const mxArray **);
 
 static void h_AddFallbackFont(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
@@ -1390,10 +1391,16 @@ const pnvg_cmd pnvg_cmds[] = {
     { "PaintDelete", h_PaintDelete, 1, 1, 0, PNVG_F_INIT, "Paints",
         "PsychNanoVG('PaintDelete', paint). Frees one paint table entry." },
     { "Path", h_Path, 1, 1, 0, PNVG_F_INIT|PNVG_F_FRAME, "Batch",
-        "PsychNanoVG('Path', cmds). cmds is a cell array of {'M',x,y}, "
-        "{'L',x,y}, {'Q',cx,cy,x,y}, {'C',c1x,c1y,c2x,c2y,x,y}, {'Z'}, or "
-        "an Nx7 matrix with the command code in column 1 (1=M, 2=L, 3=Q, "
-        "4=C, 5=Z) and zero padding. The matrix form is the fast path." },
+        "PsychNanoVG('Path', cmds). cmds is an Nx7 matrix with a command "
+        "code in column 1 and its arguments after it, zero padded: 1 M x "
+        "y, 2 L x y, 3 Q cx cy x y, 4 C c1x c1y c2x c2y x y, 5 Z, 6 Arc "
+        "cx cy r a0 a1 dir, 7 ArcTo x1 y1 x2 y2 r, 8 Ellipse cx cy rx ry, "
+        "9 Circle cx cy r, 10 Rect x y w h, 11 RoundedRect x y w h r, 12 "
+        "Winding dir. Angles are radians; dir is 1 (CCW, SOLID) or 2 (CW, "
+        "HOLE). Every row is checked before any is drawn. The same "
+        "commands also go in a cell array, such as {{'M',x,y}, "
+        "{'Arc',cx,cy,r,a0,a1,'CW'}, {'Z'}}. The matrix form is the fast "
+        "path." },
     { "PathWinding", h_PathWinding, 1, 1, 0, PNVG_F_INIT|PNVG_F_FRAME, "Paths",
         "Sets the current sub-path winding, see NVGwinding and "
         "NVGsolidity." },
@@ -1513,7 +1520,8 @@ const pnvg_cmd pnvg_cmds[] = {
     { "Stats", h_Stats, 0, 1, 1, 0, "Lifecycle",
         "s = PsychNanoVG('Stats' [, 'reset']). Per subcommand calls, "
         "totalNs, and maxNs, plus per frame endFrameNs, gpuNs, and NanoVG "
-        "draw counters." },
+        "draw counters. gpuNs is NaN when the context has no GL timer "
+        "queries." },
     { "Stroke", h_Stroke, 0, 0, 0, PNVG_F_INIT|PNVG_F_FRAME, "Paths",
         "Fills the current path with current stroke style." },
     { "StrokeColor", h_StrokeColor, 1, 1, 0, PNVG_F_INIT|PNVG_F_FRAME, "Render styles",
@@ -1521,6 +1529,14 @@ const pnvg_cmd pnvg_cmds[] = {
     { "StrokePaint", h_StrokePaint, 1, 1, 0, PNVG_F_INIT|PNVG_F_FRAME, "Render styles",
         "Sets current stroke style to a paint, which can be a one of the "
         "gradients or a pattern." },
+    { "StrokeSegments", h_StrokeSegments, 2, 2, 0, PNVG_F_INIT|PNVG_F_FRAME, "Batch",
+        "PsychNanoVG('StrokeSegments', seg, rgba). seg is Nx4 [x0 y0 x1 "
+        "y1], rgba is Nx8 [r0 g0 b0 a0 r1 g1 b1 a1], double or single. "
+        "Strokes each segment with a linear gradient from its first color "
+        "to its second, with the current stroke width, cap, and join. "
+        "Contiguous segments of one color become one stroke. Replaces the "
+        "current path and keeps the stroke paint. See "
+        "PsychNanoVGPolylineGradient." },
     { "StrokeWidth", h_StrokeWidth, 1, 1, 0, PNVG_F_INIT|PNVG_F_FRAME, "Render styles",
         "Sets the stroke width of the stroke style." },
     { "Text", h_Text, 3, 3, 1, PNVG_F_INIT|PNVG_F_FRAME, "Text",
@@ -1610,5 +1626,5 @@ const pnvg_cmd pnvg_cmds[] = {
         "v = PsychNanoVG('Version'). Struct with nanovg, psychnanovg, "
         "backend, glVersion, glRenderer, and build." },
 };
-const int pnvg_ncmds = 119;
+const int pnvg_ncmds = 120;
 const char *const pnvg_version_string = "0.1.0+nanovg.ce3bf745eb2d";
