@@ -4,6 +4,21 @@ This is the checklist for publishing a release. A release is a `v*` git tag.
 CI builds the packages, runs every test, and publishes a GitHub Release with
 one zip per engine and platform. You never build release binaries by hand.
 
+## The scripted way
+
+`do_release.ps1` in the repository root runs steps 1, 2, 4, 5 and 6 below from a
+clean `main` and stops at the first failed check:
+
+```
+.\do_release.ps1 -Version 0.2.0
+```
+
+`-DryRun` shows what it would do and changes nothing; `-SkipLocalTests` skips
+step 2 when the suite already ran on this exact tree. Step 3, the document
+updates, the GL tests and demos under Psychtoolbox, and reading the generated
+release notes stay by hand. After a red CI run, fix the cause and rerun the
+script with the same version; it continues from the version commit.
+
 ## Before you start
 
 - `git status` is clean on `main`, and the last CI run on `main` is green:
