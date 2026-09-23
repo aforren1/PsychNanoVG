@@ -387,6 +387,7 @@ function build_mex(libfile, is_octave, tracy, gles)
     args{end+1} = '-output';
     args{end+1} = fullfile(outdir, 'PsychNanoVG');
     mex(args{:});
+    age_mex_file([fullfile(outdir, 'PsychNanoVG') '.' mexext()]);
     fprintf('build complete: %s.%s\n', fullfile(outdir, 'PsychNanoVG'), ...
             mexext());
 end
@@ -424,4 +425,27 @@ function run_cmd(cmd)
     status = system(cmd);
     assert(status == 0, 'build:cmd', 'command failed (status %d): %s', ...
            status, cmd);
+end
+
+function age_mex_file(mexfile)
+% Octave 10.1 rechecks a loaded function whenever its check time is not
+% later than the last prompt or path change, with one-second resolution,
+% and reloads it when the file is newer than the parse time, also in whole
+% seconds (fcn-info.cc, out_of_date_check). Reloading a MEX function
+% recurses without end in Octave 10.1, because remove_all_breakpoints_from_
+% function looks the function up again, and the process dies. So a MEX
+% linked, put on the path and first loaded inside one wall-clock second
+% crashes the next call after any addpath or rmpath. Waiting here until that
+% second has passed costs at most a second and makes the file older than
+% any later load. MATLAB has no such check.
+    if exist('OCTAVE_VERSION', 'builtin') == 0
+        return;
+    end
+    s = stat(mexfile);
+    if isempty(s)
+        return;
+    end
+    while time() < floor(s.mtime) + 1
+        pause(0.05);
+    end
 end

@@ -962,3 +962,8 @@ The difference is inside the noise in both directions. That agrees with the
 code: the per-call path lost a function call (`pnvg_state_get`) and gained
 one global load, and the statistics code reads the current pointer once more
 after the handler. `SetContext` costs what any scalar MEX call costs.
+### 14.9 Octave 10.1 reload crash
+
+| Deviation | Reason |
+|---|---|
+| The build waits out the link second under Octave. `build.m` now ends with `age_mex_file`: under Octave it waits until the second of the MEX file's modification time has passed, at most one second, so no later load can fall inside it. MATLAB has no such check and skips the wait. Reproduced from a core dump in the `gnuoctave/octave:10.1.0` container (gdb hides the timing), and verified there by relinking and testing back to back. | Octave 10.1 rechecks a loaded function when its check time is not later than the last prompt or path stamp, in whole seconds, and `addpath` and `rmpath` set that stamp; it reloads the function when the file's modification time, with sub-second precision, is newer than the parse time truncated to whole seconds (`fcn-info.cc`, `out_of_date_check`). Reloading a MEX function recurses without end, because `remove_all_breakpoints_from_function` looks the function up again, and the process dies of stack exhaustion. So a MEX linked, put on the path and first loaded inside one wall-clock second crashes the first call after any path change. The lock was never the cause; it only made the earlier failures repeatable, because the locked MEX stayed loaded across the path change. CI runs 35887011083 and 35890452653 crashed in `test_setup` this way; the row in 14.4 about `clear -f` stays correct but was not the whole story. |
