@@ -87,9 +87,11 @@ if ($local -ne $remote) { Fail "main is not in sync with origin/main (local $loc
 if (git tag --list $Tag) { Fail "tag $Tag already exists" }
 & gh auth status 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail "gh is not authenticated; run gh auth login" }
-$lastRun = gh run list --branch main --limit 1 --json conclusion,headSha --jq '.[0] | "\(.conclusion) \(.headSha)"'
-Write-Host "last CI run on main: $lastRun"
-if (-not ($lastRun -like "success*")) { Fail "the last CI run on main is not green; fix that first" }
+# --json plus ConvertFrom-Json: PowerShell 5.1 rewrites the quotes and backslashes
+# of a jq string before gh sees them.
+$lastRun = (gh run list --branch main --limit 1 --json conclusion,headSha | ConvertFrom-Json)[0]
+Write-Host "last CI run on main: $($lastRun.conclusion) $($lastRun.headSha)"
+if ($lastRun.conclusion -ne 'success') { Fail "the last CI run on main is not green; fix that first" }
 if (Select-String -Path 'README.md' -Pattern 'first release is pending' -Quiet) {
     Write-Host "note: README.md still says the first release is pending; RELEASING.md step 3 says to remove it after this release" -ForegroundColor Yellow
 }
@@ -162,7 +164,8 @@ function Wait-Run([string]$commit, [string]$what) {
     Write-Host "run $id"
     & gh run watch $id --exit-status --interval 30
     if ($LASTEXITCODE -ne 0) {
-        gh run view $id --json jobs --jq '.jobs[] | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"'
+        $jobs = (gh run view $id --json jobs | ConvertFrom-Json).jobs
+        $jobs | Where-Object { $_.conclusion -ne 'success' } | ForEach-Object { Write-Host ('  {0}  {1}' -f $_.conclusion, $_.name) }
         Fail "CI is red for $what; fix it, then rerun this script with the same -Version"
     }
 }
