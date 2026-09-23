@@ -11,12 +11,11 @@
 
 #include "pnvg_internal.h"
 
-#define PNVG_MAX_CMDS 256
 #define PNVG_NAME_MAX 64
 
 /* SPEC 9.1: the version of the binding itself, separate from the NanoVG
  * commit that the generator stamps into pnvg_version_string. */
-#define PNVG_VERSION "0.1.0"
+#define PNVG_VERSION "0.2.0"
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                              */
@@ -50,6 +49,7 @@ void pnvg_raise(int status, const char *cmd)
     case PNVG_E_FRAMESTATE:   id = "psychnanovg:FrameState"; break;
     case PNVG_E_HANDLE:       id = "psychnanovg:Handle"; break;
     case PNVG_E_RANGE:        id = "psychnanovg:Range"; break;
+    case PNVG_E_CONTEXT:      id = "psychnanovg:Context"; break;
     default:                  id = "psychnanovg:Usage"; break;
     }
     pnvg_err(id, "%s: %s", cmd, pnvg_last_error());
@@ -462,18 +462,6 @@ mxArray *pnvg_make_rows(const NVGtextRow *r, int n, const char *base)
 }
 
 /* ------------------------------------------------------------------ */
-/* Per-subcommand statistics                                           */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    double calls;
-    double totalNs;
-    double maxNs;
-} pnvg_cmdstat;
-
-static pnvg_cmdstat g_cmdstats[PNVG_MAX_CMDS];
-
-/* ------------------------------------------------------------------ */
 /* Lifecycle handlers                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -499,7 +487,6 @@ void h_Init(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
     char renderer[16];
 
     (void)nlhs;
-    (void)plhs;
     if (opts && !mxIsStruct(opts))
         pnvg_err("psychnanovg:Type", "Init: opts must be a struct");
 
@@ -527,7 +514,8 @@ void h_Init(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
         backend = PNVG_BACKEND_BUILT;
     else if (strcmp(renderer, PNVG_BACKEND_NAME) == 0)
         backend = PNVG_BACKEND_BUILT;
-    else if (strcmp(renderer, "gl2") == 0 || strcmp(renderer, "gl3") == 0)
+    else if (strcmp(renderer, "gl2") == 0 || strcmp(renderer, "gl3") == 0 ||
+             strcmp(renderer, "gles2") == 0 || strcmp(renderer, "gles3") == 0)
         pnvg_err("psychnanovg:Usage",
                  "Init: this build has the %s backend, not %s. The backend is "
                  "chosen when the library is compiled.",
@@ -540,24 +528,28 @@ void h_Init(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
     if (st != PNVG_OK)
         pnvg_raise(st, "Init");
 
-    if (backend != PNVG_BACKEND_NULL && pnvg_state_get()->stencilBits == 0)
+    if (backend != PNVG_BACKEND_NULL && pnvg_cur->stencilBits == 0)
         mexWarnMsgIdAndTxt("psychnanovg:NoStencil",
                            "The drawing target has no stencil buffer. Concave "
                            "fills and NVG_STENCIL_STROKES will be wrong.");
-    memset(g_cmdstats, 0, sizeof(g_cmdstats));
+    /* One lock for any number of contexts. The MEX must stay loaded while a
+     * context holds NanoVG memory and GL object names. */
     if (!g_locked) {
         mexLock();
         g_locked = 1;
     }
+    plhs[0] = mxCreateDoubleScalar((double)pnvg_cur->id);
 }
 
 static void pnvg_at_exit(void)
 {
-    /* R7: without a current GL context the GL objects cannot be deleted, and
-     * the driver reclaims them with the context anyway. */
-    pnvg_state *s = pnvg_state_get();
-    if (s->vg && (s->backend == PNVG_BACKEND_NULL || pnvg_gl_have_context()))
-        pnvg_shutdown();
+    /* R7: a context whose GL context is not current has its memory freed
+     * and its GL objects left to the driver, which reclaims them with the
+     * GL context anyway. */
+    int ids[PNVG_MAX_CONTEXTS];
+    int i, n = pnvg_context_list(ids, PNVG_MAX_CONTEXTS);
+    for (i = 0; i < n; i++)
+        pnvg_context_destroy(pnvg_context_get(ids[i]), NULL);
 #if PNVG_TRACY
     /* The profiler threads live in this MEX file's code, which is about to
      * be unloaded. */
@@ -565,24 +557,70 @@ static void pnvg_at_exit(void)
 #endif
 }
 
+static void shutdown_one(pnvg_state *s, int warn)
+{
+    int left = 0, gl, id = s->id;
+    gl = s->backend != PNVG_BACKEND_NULL && pnvg_context_check_gl(s) == PNVG_OK;
+    pnvg_context_destroy(s, &left);
+    if (gl)
+        /* R3: a name that the driver already dropped makes glDelete* set an
+         * error, and Screen('EndOpenGL') would then abort the script. */
+        pnvg_gl_drain_error();
+    if (left && warn)
+        mexWarnMsgIdAndTxt("psychnanovg:NoGLContext",
+                           "Shutdown of context %d ran without its GL context "
+                           "current. Its memory was freed and its GL objects "
+                           "were left to the driver.", id);
+}
+
 void h_Shutdown(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
-    pnvg_state *s = pnvg_state_get();
-    (void)nlhs; (void)plhs; (void)nrhs; (void)prhs;
-    if (!s->vg)
-        pnvg_err("psychnanovg:NotInit", "Shutdown: no context to shut down");
-    if (s->backend != PNVG_BACKEND_NULL && !pnvg_gl_have_context()) {
-        mexWarnMsgIdAndTxt("psychnanovg:NoGLContext",
-                           "Shutdown ran without a current GL context. The GL "
-                           "objects were left to the driver.");
-        memset(s, 0, sizeof(*s));
+    (void)nlhs; (void)plhs;
+    if (nrhs > 0 && mxIsChar(prhs[0])) {
+        char buf[8];
+        int ids[PNVG_MAX_CONTEXTS];
+        int i, n;
+        if (mxGetString(prhs[0], buf, sizeof(buf)) != 0 ||
+            strcmp(buf, "all") != 0)
+            pnvg_err("psychnanovg:Usage",
+                     "Shutdown takes a context handle or 'all'");
+        /* Cleanup after a failed script, like sca: the contexts whose
+         * window is gone are freed without a warning each. */
+        n = pnvg_context_list(ids, PNVG_MAX_CONTEXTS);
+        for (i = 0; i < n; i++)
+            shutdown_one(pnvg_context_get(ids[i]), 0);
+    } else if (nrhs > 0) {
+        int id = pnvg_arg_int(prhs[0], 0, "Shutdown");
+        pnvg_state *s = pnvg_context_get(id);
+        if (!s)
+            pnvg_err("psychnanovg:Handle",
+                     "Shutdown: %d is not an open context", id);
+        shutdown_one(s, 1);
     } else {
-        pnvg_shutdown();
+        if (!pnvg_cur->vg)
+            pnvg_err("psychnanovg:NotInit",
+                     "Shutdown: no context is current%s",
+                     pnvg_context_count() > 0
+                         ? ". Pass a handle, or 'all'" : "");
+        shutdown_one(pnvg_cur, 1);
     }
-    if (g_locked) {
+    if (g_locked && pnvg_context_count() == 0) {
         mexUnlock();
         g_locked = 0;
     }
+}
+
+void h_SetContext(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    int prev = pnvg_cur->vg ? pnvg_cur->id : 0;
+    (void)nlhs;
+    if (nrhs > 0) {
+        int id = pnvg_arg_int(prhs[0], 0, "SetContext");
+        if (pnvg_context_set(id) != PNVG_OK)
+            pnvg_err("psychnanovg:Handle",
+                     "SetContext: %d is not an open context", id);
+    }
+    plhs[0] = mxCreateDoubleScalar((double)prev);
 }
 
 void h_BeginFrame(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
@@ -715,34 +753,45 @@ void h_Opcode(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 void h_Version(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     static const char *fields[] = {"nanovg", "psychnanovg", "backend",
-                                   "glVersion", "glRenderer", "build"};
-    pnvg_state *s = pnvg_state_get();
-    mxArray *v;
+                                   "glVersion", "glRenderer", "build",
+                                   "context", "contexts"};
+    pnvg_state *s = pnvg_cur;
+    mxArray *v, *list;
     const char *backend = "none";
-    char build[128];
+    char build[160];
+    int ids[PNVG_MAX_CONTEXTS];
+    int i, n;
     (void)nlhs; (void)nrhs; (void)prhs;
 
     switch (s->backend) {
-    case PNVG_BACKEND_GL3:  backend = "GL3"; break;
-    case PNVG_BACKEND_GL2:  backend = "GL2"; break;
-    case PNVG_BACKEND_NULL: backend = "null"; break;
+    case PNVG_BACKEND_GL3:   backend = "GL3"; break;
+    case PNVG_BACKEND_GL2:   backend = "GL2"; break;
+    case PNVG_BACKEND_GLES2: backend = "GLES2"; break;
+    case PNVG_BACKEND_GLES3: backend = "GLES3"; break;
+    case PNVG_BACKEND_NULL:  backend = "null"; break;
     default: break;
     }
-    snprintf(build, sizeof(build), "%s %s, stats=%d, tracy=%d",
-             __DATE__, __TIME__, PSYCHNANOVG_STATS,
+    snprintf(build, sizeof(build), "%s %s, %s, stats=%d, tracy=%d",
+             __DATE__, __TIME__, PNVG_BACKEND_NAME, PSYCHNANOVG_STATS,
 #if defined(PSYCHNANOVG_TRACY) && PSYCHNANOVG_TRACY
              1
 #else
              0
 #endif
              );
-    v = mxCreateStructMatrix(1, 1, 6, fields);
+    n = pnvg_context_list(ids, PNVG_MAX_CONTEXTS);
+    list = mxCreateDoubleMatrix(1, (mwSize)n, mxREAL);
+    for (i = 0; i < n; i++)
+        ((double *)mxGetData(list))[i] = (double)ids[i];
+    v = mxCreateStructMatrix(1, 1, 8, fields);
     mxSetFieldByNumber(v, 0, 0, mxCreateString(pnvg_version_string));
     mxSetFieldByNumber(v, 0, 1, mxCreateString(PNVG_VERSION));
     mxSetFieldByNumber(v, 0, 2, mxCreateString(backend));
     mxSetFieldByNumber(v, 0, 3, mxCreateString(s->glVersion[0] ? s->glVersion : ""));
     mxSetFieldByNumber(v, 0, 4, mxCreateString(s->glRenderer[0] ? s->glRenderer : ""));
     mxSetFieldByNumber(v, 0, 5, mxCreateString(build));
+    mxSetFieldByNumber(v, 0, 6, mxCreateDoubleScalar(s->vg ? (double)s->id : 0.0));
+    mxSetFieldByNumber(v, 0, 7, list);
     plhs[0] = v;
 }
 
@@ -753,7 +802,8 @@ void h_Stats(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
                                 "fillCount", "strokeCount", "textCount",
                                 "vertexCount", "commands"};
     static const char *cf[] = {"name", "calls", "totalNs", "maxNs"};
-    pnvg_state *s = pnvg_state_get();
+    pnvg_state *s = pnvg_cur;
+    const pnvg_cmdstat *cs = s->cmdstats;
     mxArray *out, *cmds;
     int i, n = 0, k = 0;
     (void)nlhs;
@@ -764,22 +814,25 @@ void h_Stats(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
             strcmp(buf, "reset") != 0)
             pnvg_err("psychnanovg:Usage",
                      "Stats: the only option is the string 'reset'");
-        memset(g_cmdstats, 0, sizeof(g_cmdstats));
-        pnvg_stats_reset();
+        /* The empty state behind "no context" stays empty. */
+        if (s->vg) {
+            memset(s->cmdstats, 0, sizeof(s->cmdstats));
+            pnvg_stats_reset();
+        }
         return;
     }
 
     for (i = 0; i < pnvg_ncmds && i < PNVG_MAX_CMDS; i++)
-        if (g_cmdstats[i].calls > 0.0)
+        if (cs[i].calls > 0.0)
             n++;
     cmds = mxCreateStructMatrix(1, (mwSize)n, 4, cf);
     for (i = 0; i < pnvg_ncmds && i < PNVG_MAX_CMDS; i++) {
-        if (g_cmdstats[i].calls <= 0.0)
+        if (cs[i].calls <= 0.0)
             continue;
         mxSetFieldByNumber(cmds, k, 0, mxCreateString(pnvg_cmds[i].name));
-        mxSetFieldByNumber(cmds, k, 1, mxCreateDoubleScalar(g_cmdstats[i].calls));
-        mxSetFieldByNumber(cmds, k, 2, mxCreateDoubleScalar(g_cmdstats[i].totalNs));
-        mxSetFieldByNumber(cmds, k, 3, mxCreateDoubleScalar(g_cmdstats[i].maxNs));
+        mxSetFieldByNumber(cmds, k, 1, mxCreateDoubleScalar(cs[i].calls));
+        mxSetFieldByNumber(cmds, k, 2, mxCreateDoubleScalar(cs[i].totalNs));
+        mxSetFieldByNumber(cmds, k, 3, mxCreateDoubleScalar(cs[i].maxNs));
         k++;
     }
 
@@ -867,7 +920,9 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     char name[PNVG_NAME_MAX];
     const pnvg_cmd *c;
-    pnvg_state *s = pnvg_state_get();
+    /* Resolved once per call. Init, SetContext, and Shutdown change it, so
+     * the statistics below read pnvg_cur again after the handler. */
+    pnvg_state *s = pnvg_cur;
     int idx = -1, nargs;
     double t0 = 0.0;
     static int atexit_set;
@@ -933,17 +988,29 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 
     if ((c->flags & PNVG_F_INIT) && !s->vg)
         pnvg_err("psychnanovg:NotInit",
-                 "%s needs a context. Call PsychNanoVG('Init') first.", c->name);
+                 pnvg_context_count() > 0
+                     ? "%s needs a current context. Call "
+                       "PsychNanoVG('SetContext', ctx) first."
+                     : "%s needs a context. Call PsychNanoVG('Init') first.",
+                 c->name);
     if ((c->flags & PNVG_F_FRAME) && !s->inFrame)
         pnvg_err("psychnanovg:FrameState",
                  "%s must run between BeginFrame and EndFrame", c->name);
     /* Init carries PNVG_F_GL too, but its renderer is not known yet, so the
-     * context check for it happens in the core. */
+     * context check for it happens in the core. The check compares the GL
+     * context that is current with the one the context was made in: two
+     * Psychtoolbox windows have two GL contexts that share no objects, so a
+     * call in the wrong one would use names that mean something else there. */
     if ((c->flags & PNVG_F_GL) && (c->flags & PNVG_F_INIT) &&
-        s->backend != PNVG_BACKEND_NULL && !pnvg_gl_have_context())
-        pnvg_err("psychnanovg:NoGLContext",
-                 "%s issues OpenGL calls. Call it between "
-                 "Screen('BeginOpenGL') and Screen('EndOpenGL').", c->name);
+        s->backend != PNVG_BACKEND_NULL) {
+        int st = pnvg_context_check_gl(s);
+        if (st == PNVG_E_NOGLCONTEXT)
+            pnvg_err("psychnanovg:NoGLContext",
+                     "%s issues OpenGL calls. Call it between "
+                     "Screen('BeginOpenGL') and Screen('EndOpenGL').", c->name);
+        if (st != PNVG_OK)
+            pnvg_raise(st, c->name);
+    }
 
 #if PSYCHNANOVG_STATS
     t0 = pnvg_now_ns();
@@ -957,12 +1024,14 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
     c->fn(nlhs, plhs, nargs, prhs + 1);
     PNVG_ZONE_END();
 #if PSYCHNANOVG_STATS
-    if (idx < PNVG_MAX_CMDS) {
+    s = pnvg_cur;
+    if (idx < PNVG_MAX_CMDS && s->vg) {
         double dt = pnvg_now_ns() - t0;
-        g_cmdstats[idx].calls += 1.0;
-        g_cmdstats[idx].totalNs += dt;
-        if (dt > g_cmdstats[idx].maxNs)
-            g_cmdstats[idx].maxNs = dt;
+        pnvg_cmdstat *cs = &s->cmdstats[idx];
+        cs->calls += 1.0;
+        cs->totalNs += dt;
+        if (dt > cs->maxNs)
+            cs->maxNs = dt;
     }
 #endif
 

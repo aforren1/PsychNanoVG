@@ -17,6 +17,11 @@ function build(target)
 %   library and the zones into the MEX (SPEC 9.3). Tracy is not vendored:
 %   clone it into third_party/tracy first. Unset, the build is the normal
 %   one, and the zones compile to nothing.
+%
+%   Set PSYCHNANOVG_GLES=2 or 3, on Linux only, to build the NanoVG GLES2 or
+%   GLES3 backend instead of GL3 (SPEC 14.8). That MEX works only in a
+%   Psychtoolbox window with a GLES context, which Psychtoolbox makes with
+%   its Waffle display backends and PSYCH_USE_GFX_BACKEND=gles2 or gles3.
 
     if nargin < 1
         target = 'build';
@@ -63,9 +68,10 @@ function build(target)
     if tracy
         check_tracy(here);
     end
-    build_library(builddir, instdir, is_octave, false, tracy);
+    gles = gles_version();
+    build_library(builddir, instdir, is_octave, false, tracy, gles);
     libfile = find_library(instdir, is_octave);
-    build_mex(libfile, is_octave, tracy);
+    build_mex(libfile, is_octave, tracy, gles);
 
     if strcmpi(target, 'test')
         addpath(fullfile(here, 'tests'));
@@ -101,6 +107,22 @@ function tf = tracy_enabled()
     tf = any(strcmp(v, {'1', 'on', 'true', 'yes'}));
 end
 
+function v = gles_version()
+% '' for the default GL backend, or '2' or '3'.
+    v = strtrim(getenv('PSYCHNANOVG_GLES'));
+    if isempty(v) || any(strcmpi(v, {'0', 'off', 'no', 'false'}))
+        v = '';
+        return;
+    end
+    if ~any(strcmp(v, {'2', '3'}))
+        error('build:gles', 'PSYCHNANOVG_GLES must be 2 or 3, not "%s"', v);
+    end
+    if ispc || ismac
+        error('build:gles', ['PSYCHNANOVG_GLES is for Linux. Psychtoolbox ' ...
+              'makes GLES contexts only through Waffle, on Linux.']);
+    end
+end
+
 function check_tracy(here)
 % CMake refuses too, but only after the configure step has run, and its
 % message is buried in the CMake log. This one names the fix first.
@@ -124,7 +146,10 @@ function run_generator(here)
     run_cmd(cmd);
 end
 
-function build_library(builddir, instdir, is_octave, smoke, tracy)
+function build_library(builddir, instdir, is_octave, smoke, tracy, gles)
+    if nargin < 6
+        gles = '';
+    end
     if ~exist(builddir, 'dir'); mkdir(builddir); end
     cfg = ['cmake -E chdir ' builddir ' cmake' ...
            ' -DCMAKE_BUILD_TYPE=Release' ...
@@ -139,6 +164,13 @@ function build_library(builddir, instdir, is_octave, smoke, tracy)
         cfg = [cfg ' -DPSYCHNANOVG_TRACY=ON'];
     else
         cfg = [cfg ' -DPSYCHNANOVG_TRACY=OFF'];
+    end
+    % Explicit for the same reason: a GLES library in the cache must not
+    % reach a normal build.
+    if isempty(gles)
+        cfg = [cfg ' -DPSYCHNANOVG_GLES=OFF'];
+    else
+        cfg = [cfg ' -DPSYCHNANOVG_GLES=' gles];
     end
 
     gen = getenv('MEX_CMAKE_GENERATOR');
@@ -271,7 +303,7 @@ function libfile = find_library(instdir, is_octave)
            'static library not found: %s', libfile);
 end
 
-function build_mex(libfile, is_octave, tracy)
+function build_mex(libfile, is_octave, tracy, gles)
     % dist is split by platform because Octave calls its MEX PsychNanoVG.mex
     % everywhere, so a Linux build would otherwise replace the Windows one in
     % a working tree that is shared with WSL.
@@ -297,6 +329,11 @@ function build_mex(libfile, is_octave, tracy)
         % CMake compiles the GL2 backend there. The MEX has to agree, because
         % it reports the backend and validates opts.renderer.
         args{end+1} = '-DPNVG_GL2=1';
+    end
+    if ~isempty(gles)
+        % The MEX reports the backend and validates opts.renderer, so it
+        % has to know which one the library has.
+        args{end+1} = ['-DPNVG_GLES=' gles];
     end
     if tracy
         % The same defines as the library, or the MEX and the core would
@@ -340,6 +377,9 @@ function build_mex(libfile, is_octave, tracy)
                 args = [{'-v'}, args];
             end
         end
+    elseif ~isempty(gles)
+        % The GLES loader opens libEGL and libGLESv2 at run time.
+        args{end+1} = '-ldl';
     else
         args{end+1} = '-lGL';
         args{end+1} = '-ldl';
@@ -353,8 +393,9 @@ end
 
 function build_smoke(is_octave)
     d = ['build-smoke' platform_suffix()];
+    gles = gles_version();
     build_library(d, ['inst-smoke' platform_suffix()], is_octave, true, ...
-                  tracy_enabled());
+                  tracy_enabled(), gles);
     if ispc
         exe = fullfile(d, 'Release', 'smoke_gl.exe');
         if ~exist(exe, 'file')
@@ -365,6 +406,9 @@ function build_smoke(is_octave)
     end
     assert(exist(exe, 'file') ~= 0, 'build:smoke', 'smoke_gl not built');
     if ispc
+        run_cmd(['"' exe '"']);
+    elseif ~isempty(gles)
+        % An EGL pbuffer needs no display.
         run_cmd(['"' exe '"']);
     else
         % A CI runner and a WSL session have no display of their own.

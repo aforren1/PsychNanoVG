@@ -7,7 +7,9 @@ function varargout = PsychNanoVGGL(vg, subcommand, varargin)
 %   CreateFont, CreateImage, CreateImageRGBA, UpdateImage, DeleteImage,
 %   CreateImageFromTexture, and the RenderTarget commands. This helper wraps
 %   one of them in Screen('BeginOpenGL') and Screen('EndOpenGL'), so a setup
-%   script never writes that pair.
+%   script never writes that pair. It makes the context of `vg` current
+%   first, so the subcommand acts on the fonts, images, and render targets
+%   of that window. The context stays current afterwards.
 %
 %   When userspace rendering is already active, that is between a
 %   Screen('BeginOpenGL') and its Screen('EndOpenGL'), or inside a
@@ -37,12 +39,14 @@ function varargout = PsychNanoVGGL(vg, subcommand, varargin)
 
     [~, isUserspace] = Screen('GetOpenGLDrawMode');
     if isUserspace > 0
+        select_context(vg);
         [varargout{1:nargout}] = PsychNanoVG(subcommand, varargin{:});
         return;
     end
 
     Screen('BeginOpenGL', vg.win);
     try
+        select_context(vg);
         [varargout{1:nargout}] = PsychNanoVG(subcommand, varargin{:});
     catch err
         end_gl(vg.win);
@@ -52,6 +56,14 @@ function varargout = PsychNanoVGGL(vg, subcommand, varargin)
 end
 
 % ---------------------------------------------------------------------------
+
+function select_context(vg)
+% A struct without a ctx field predates phase 3. The current context is then
+% the only one there is.
+    if isfield(vg, 'ctx') && vg.ctx > 0
+        PsychNanoVG('SetContext', vg.ctx);
+    end
+end
 
 function end_gl(win)
 % Screen('EndOpenGL') has to run even when the wrapped call failed. Without

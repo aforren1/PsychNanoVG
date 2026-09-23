@@ -42,7 +42,7 @@ function run_tests()
     end
 
     suites = {'test_dispatch', 'test_gen_marshal', 'test_paths', ...
-              'test_transforms', 'test_helpers'};
+              'test_transforms', 'test_contexts', 'test_helpers'};
     for k = 1:numel(suites)
         fprintf('-- %s\n', suites{k});
         before = TST_FAIL;
@@ -52,9 +52,9 @@ function run_tests()
             TST_FAIL = TST_FAIL + 1;
             fprintf(2, '  FAIL  %s raised %s: %s\n', suites{k}, ...
                     e.identifier, e.message);
-            % A suite that dies part way leaves a context behind.
+            % A suite that dies part way leaves contexts behind.
             try
-                PsychNanoVG('Shutdown');
+                PsychNanoVG('Shutdown', 'all');
             catch
             end
         end
@@ -71,7 +71,7 @@ function run_tests()
         rmpath(fullfile(here, 'stub'));
         rehash_if_matlab();
         gl = {'test_gl_shapes', 'test_gl_text', 'test_gl_target', ...
-              'test_gl_paths'};
+              'test_gl_paths', 'test_gl_contexts'};
         addpath(fullfile(here, 'gl'));
         for k = 1:numel(gl)
             feval(gl{k});

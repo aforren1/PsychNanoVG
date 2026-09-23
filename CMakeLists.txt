@@ -27,6 +27,25 @@ endif()
 option(PSYCHNANOVG_TRACY "Compile the Tracy client into the library" OFF)
 option(PSYCHNANOVG_SMOKE_GL "Build the native GL smoke test" OFF)
 set(PSYCHNANOVG_STATS 1 CACHE STRING "1 keeps the Stats counters, 0 removes them")
+# Psychtoolbox makes GLES contexts on Linux only, through its Waffle display
+# backends (SPEC 14.8). NanoVG compiles one GL backend per library, so a GLES
+# build replaces GL3 rather than adding to it.
+set(PSYCHNANOVG_GLES OFF CACHE STRING
+    "OFF, 2, or 3. Linux only: build the NanoVG GLES2 or GLES3 backend instead of GL3")
+set_property(CACHE PSYCHNANOVG_GLES PROPERTY STRINGS OFF 2 3)
+if(PSYCHNANOVG_GLES)
+    if(NOT PSYCHNANOVG_GLES MATCHES "^[23]$")
+        message(FATAL_ERROR "PSYCHNANOVG_GLES must be OFF, 2, or 3, not '${PSYCHNANOVG_GLES}'")
+    endif()
+    if(WIN32 OR APPLE)
+        message(FATAL_ERROR
+            "PSYCHNANOVG_GLES is for Linux. Psychtoolbox makes GLES contexts "
+            "only through Waffle, which it builds on Linux alone.")
+    endif()
+    set(PNVG_GLAD_SOURCE third_party/glad/src/gles2.c)
+else()
+    set(PNVG_GLAD_SOURCE third_party/glad/src/gl.c)
+endif()
 
 set(NANOVG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nanovg)
 if(NOT EXISTS ${NANOVG_DIR}/src/nanovg.c)
@@ -41,7 +60,7 @@ add_library(pnvg STATIC
     src/core/pnvg_core.c
     src/core/pnvg_null.c
     src/pnvg_gl.c
-    third_party/glad/src/gl.c
+    ${PNVG_GLAD_SOURCE}
 )
 
 target_include_directories(pnvg PUBLIC
@@ -98,7 +117,12 @@ else()
     target_compile_options(pnvg PRIVATE -Wall -Wno-unused-function)
 endif()
 
-if(WIN32)
+if(PSYCHNANOVG_GLES)
+    # The loader opens libEGL and libGLESv2 at run time (src/pnvg_gl.c), so
+    # the library links neither and builds without their development files.
+    target_compile_definitions(pnvg PUBLIC PNVG_GLES=${PSYCHNANOVG_GLES})
+    target_link_libraries(pnvg PUBLIC dl m)
+elseif(WIN32)
     target_link_libraries(pnvg PUBLIC opengl32)
 elseif(APPLE)
     target_link_libraries(pnvg PUBLIC "-framework OpenGL")
@@ -118,7 +142,10 @@ install(TARGETS pnvg ARCHIVE DESTINATION lib)
 if(PSYCHNANOVG_SMOKE_GL)
     add_executable(smoke_gl tests/smoke_gl.c)
     target_link_libraries(smoke_gl PRIVATE pnvg)
-    if(WIN32)
+    if(PSYCHNANOVG_GLES)
+        # The GLES smoke test makes its own EGL pbuffer context.
+        target_link_libraries(smoke_gl PRIVATE EGL GLESv2)
+    elseif(WIN32)
         target_link_libraries(smoke_gl PRIVATE gdi32 user32)
     elseif(NOT APPLE)
         # The test opens its own GLX window, so it needs Xlib directly.

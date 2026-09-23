@@ -10,6 +10,11 @@ TrueType text with exact glyph metrics. The GPU does the antialiasing. The
 MEX draws into the same framebuffer as `Screen`, so you can mix the two in
 one frame.
 
+![One frame of PsychNanoVGDemo in a 1280x720 Psychtoolbox window: a pair of eyes with drop shadows and highlights, an arc gauge with a gradient band, a ring with a gradient edge and 100 cached copies of it, a Bezier trajectory, and a wave with one color per vertex.](docs/images/psychnanovg-demo.png)
+
+The picture is one frame of `PsychNanoVGDemo` read back from a Psychtoolbox
+window, and `tools/CaptureReadmeScreenshot.m` makes it again.
+
 `SPEC.md` is the design reference. This file tells you how to build the
 binding, how to test it, and how to use it.
 
@@ -17,14 +22,16 @@ binding, how to test it, and how to use it.
 
 | Part | State |
 |---|---|
-| Generated API, 96 subcommands, 120 in total | Works. Tested with the null renderer under MATLAB R2023a and Octave 10.1. |
+| Generated API, 96 subcommands, 121 in total | Works. Tested with the null renderer under MATLAB R2023a and Octave 10.1. |
 | Batched paths, paints, fonts, images, `Stats` | Works. |
 | Arcs and shapes in the `Path` matrix, `StrokeSegments`, `PsychNanoVGPolylineGradient` | Works. Phase 2. Covered by the null renderer suite, by `tests/gl/test_gl_paths`, and by the native smoke test. |
-| Psychtoolbox integration, `tests/gl/` | Works under MATLAB. With the suite that needs no GPU, 336 assertions pass, including shapes, text metrics, the render target round trip, an arc gauge, and a gradient polyline. |
+| Psychtoolbox integration, `tests/gl/` | Works under MATLAB. With the suite that needs no GPU, 420 assertions pass, including shapes, text metrics, the render target round trip, an arc gauge, a gradient polyline, and two windows. Octave passes the 348 that need no GPU. |
+| Several windows, one context each | Works. Phase 3. Tested with two Psychtoolbox windows under MATLAB, with the null renderer everywhere, and with two GL contexts in the native smoke test. |
 | Render targets, `CreateImageFromTexture` | Works. Covered by `tests/gl/test_gl_target` and by the native smoke test. |
 | `tests/gl/` under Octave | Skipped. The Psychtoolbox `Screen` MEX for Octave does not load on the development machine. |
 | `m/PsychNanoVGDemo` | Runs under MATLAB. It holds a full screen window for six seconds by default. |
 | Linux | Works. Built and tested with Octave 6.4 on Ubuntu 22.04, and `smoke_gl` runs under Xvfb with Mesa llvmpipe. |
+| GLES2 and GLES3 on Linux | A build option. Phase 3. The smoke test passes in an EGL pbuffer with Mesa. Not tried in a Psychtoolbox window, because that needs a Psychtoolbox Waffle build. |
 | macOS on Apple silicon | Built and tested on the `macos-latest` runner, with the GL2 backend. The GL 2.1 context has no GPU timer unless it offers `GL_ARB_timer_query`, so `gpuNs` can be NaN there. |
 | macOS on Intel | Not covered. |
 | Tracy | Works when you turn it on. CPU zones for every subcommand and the hot paths, and a GPU zone per frame. Built and captured on Windows with MSVC and with Octave's MinGW. Not tried on Linux or macOS. |
@@ -86,6 +93,32 @@ Other targets:
 
 Set `MEX_CMAKE_GENERATOR` to choose a different CMake generator.
 
+### Build for GLES on Linux
+
+Psychtoolbox makes an OpenGL ES context only with its Waffle display
+backends, on Linux: the Wayland `Screen` that ships in
+`PsychBasic/Octave5LinuxFiles64/Wayland`, or an embedded build. Set
+`PSYCH_USE_GFX_BACKEND=gles2` or `gles3` before Psychtoolbox starts. The
+MEX then needs the matching NanoVG backend:
+
+    PSYCHNANOVG_GLES=3 octave-cli --eval build
+
+The value is `2` or `3`. The GLES backend replaces the GL3 backend, so this
+MEX works only in a GLES window, and `PsychNanoVG('Version').backend` says
+`GLES3`. Build again without the variable to get the normal MEX back. The
+GLES backends have no GPU timer, so `gpuNs` in `Stats` is NaN. NanoVG has no
+GLES1 backend. SPEC section 14.8 has the details.
+
+To run the smoke test on the GLES backend in an EGL pbuffer, without a
+display:
+
+    cmake -S . -B build-gles3 -DPSYCHNANOVG_GLES=3 -DPSYCHNANOVG_SMOKE_GL=ON
+    cmake --build build-gles3 --target smoke_gl
+    ./build-gles3/smoke_gl
+
+It needs the EGL and GLES development files, such as `libegl-dev` and
+`libgles-dev` on Ubuntu.
+
 ### Put it on the path
 
 `PsychNanoVGSetup` picks the `dist/<arch>` directory for the engine and the
@@ -114,8 +147,14 @@ once, closes once, and closes again on an error. Path building, the state stack,
 text layout, the handle tables, and all of the marshaling run for real. Only
 the OpenGL calls are absent.
 
+`test_contexts` checks several contexts with the null renderer: switching,
+handles, per-context state and Stats, `Shutdown` of a context that is not
+current, and the MEX lock.
+
 The tests in `tests/gl/` need Psychtoolbox and a GPU. `run_tests` reports
-them as skipped when `Screen` does not answer.
+them as skipped when `Screen` does not answer. `test_gl_contexts` opens two
+small windows side by side. When a second window does not open, it puts both
+contexts into one window and skips the checks that need two.
 
 Every script that opens a window goes through `tests/gl/ptb_test_window.m`.
 That helper sets `SkipSyncTests` and `VisualDebugLevel`, so an unattended run
@@ -124,7 +163,8 @@ does not stop for the display sync report or the welcome splash.
 `tests/smoke_gl.c` is a native program that opens its own off-screen window
 and OpenGL context, with WGL on Windows and GLX elsewhere. It exercises the
 real GL path without Psychtoolbox, and it is the only GL coverage under Octave
-and on CI:
+and on CI. It also makes a second NanoVG context and a second GL context, to
+check that contexts keep their state apart and refuse the wrong GL context:
 
     matlab -batch "build smoke"
     octave-cli --eval "build smoke"
@@ -171,11 +211,11 @@ Four M-files stand between a script and the MEX, so a script never writes a
 
 | Helper | What it does |
 |---|---|
-| `vg = PsychNanoVGOpen(win [, opts])` | Creates the context for an open window and loads a default sans font. Returns the handle struct. |
-| `PsychNanoVGFrame('Begin', vg [, w, h])` | Enters the OpenGL region and starts the frame. |
-| `PsychNanoVGFrame('End', vg)` | Finishes the frame and leaves the region. |
-| `PsychNanoVGGL(vg, subcommand, ...)` | Runs one OpenGL subcommand, such as `CreateFont`, inside its own region. |
-| `PsychNanoVGClose(vg)` | Deletes the context. Safe twice, and safe after the window is closed. |
+| `vg = PsychNanoVGOpen(win [, opts])` | Creates a context for an open window and loads a default sans font. Returns the handle struct, with the context handle in `vg.ctx`. |
+| `PsychNanoVGFrame('Begin', vg [, w, h])` | Enters the OpenGL region, selects the context of `vg`, and starts the frame. |
+| `PsychNanoVGFrame('End', vg)` | Finishes the frame of `vg` and leaves the region. |
+| `PsychNanoVGGL(vg, subcommand, ...)` | Selects the context of `vg` and runs one OpenGL subcommand, such as `CreateFont`, inside its own region. |
+| `PsychNanoVGClose(vg)` | Deletes the context of `vg`. Safe twice, and safe after the window is closed. |
 
 Between `Begin` and `End`, draw with plain `PsychNanoVG` calls.
 
@@ -213,7 +253,60 @@ error inside a wrapped region still leaves Psychtoolbox in 2D drawing mode.
 
 `PsychNanoVGDemo` shows more: a gradient ring, a Bezier trajectory, text
 placed with `TextBounds`, a cached render target, a gauge drawn from arcs,
-and a wave with one color per vertex.
+a wave with one color per vertex, and the eyes of the NanoVG example, which
+follow the mouse.
+
+### Draw into two windows
+
+Psychtoolbox gives every onscreen window its own OpenGL context, and the
+two contexts share no objects. A font, an image, or a render target made
+for one window does not exist in the other. Open one context per window;
+the helpers select the right one for you:
+
+```matlab
+InitializeMatlabOpenGL(1);
+winA = PsychImaging('OpenWindow', screenid, 0, [0 0 640 480]);
+winB = PsychImaging('OpenWindow', screenid, 0, [700 0 1340 480]);
+vgA = PsychNanoVGOpen(winA);
+vgB = PsychNanoVGOpen(winB);
+
+% every frame
+PsychNanoVGFrame('Begin', vgA);
+% draw into window A
+PsychNanoVGFrame('End', vgA);
+PsychNanoVGFrame('Begin', vgB);
+% draw into window B
+PsychNanoVGFrame('End', vgB);
+Screen('Flip', winA, [], [], [], 1);           % flips both windows
+
+PsychNanoVGClose(vgB);
+PsychNanoVGClose(vgA);
+```
+
+Use the fonts of each struct in its own window: `vgA.fonts.sans` in the
+frame of `vgA`. `PsychNanoVGTwoWindowDemo` is the full example. An offscreen
+window uses the OpenGL context of its parent window, so it uses the context
+of that window too.
+
+In the low-level form, one context is current at a time.
+`ctx = PsychNanoVG('Init')` makes a new one current, and
+`PsychNanoVG('SetContext', ctx)` selects another. Select it after
+`Screen('BeginOpenGL')` for its window:
+
+| Subcommand | What it does |
+|---|---|
+| `ctx = PsychNanoVG('Init' [, opts])` | Creates a context in the OpenGL context that is current, and makes it current. |
+| `prev = PsychNanoVG('SetContext', ctx)` | Makes `ctx` current. Returns the handle that was current, 0 for none. |
+| `ctx = PsychNanoVG('SetContext')` | Returns the current handle and changes nothing. |
+| `PsychNanoVG('Shutdown' [, ctx])` | Deletes `ctx`, or the current context. Run it in the region of the window of `ctx`. |
+| `PsychNanoVG('Shutdown', 'all')` | Deletes every context, for example after a script failed before its cleanup. |
+| `v = PsychNanoVG('Version')` | `v.context` is the current handle and `v.contexts` lists every open one. |
+
+`Stats` reports the current context. A subcommand that issues OpenGL calls
+while the OpenGL context of another window is current raises
+`psychnanovg:Context` and makes no OpenGL call. A `Shutdown` in the wrong
+region frees the memory, warns, and leaves the OpenGL objects to the driver.
+The MEX file stays locked until the last context goes.
 
 ### The low-level form
 
@@ -282,6 +375,7 @@ The subcommand names are the NanoVG names without the `nvg` prefix.
 | R6 | The MEX never calls `Screen`. |
 | R7 | Run `Shutdown` inside `BeginOpenGL`. |
 | R8 | One `BeginFrame` per `EndFrame`. Nested frames are an error. |
+| R9 | One context per window. The helpers select it. In the low-level form, call `SetContext` after `Screen('BeginOpenGL')`. |
 
 ## Draw many vertices
 
@@ -450,17 +544,18 @@ stops with `build:tracy` and prints the clone command.
 
 | Path | Contents |
 |---|---|
-| `src/PsychNanoVG.c` | The MEX entry point, dispatch, marshaling, lifecycle. |
+| `src/psychnanovg.c` | The MEX entry point, dispatch, marshaling, lifecycle, contexts. |
 | `src/core/` | The NanoVG-facing layer, with no MATLAB types. The smoke test links it. |
-| `src/pnvg_gl.c` | glad, the NanoVG GL backend, the proc loader, GL state save and restore. |
+| `src/pnvg_gl.c` | glad, the NanoVG GL or GLES backend, the proc loader, GL state save and restore, the GPU timer. |
 | `src/pnvg_batch.c` | `Polyline`, `Polygon`, `Path`, `Circles`, `Rects`, `StrokeSegments`. |
 | `src/pnvg_profiler.h`, `src/core/pnvg_tracy.cpp` | The Stats switch and the Tracy zones. The C++ file is compiled only with Tracy. |
 | `src/pnvg_targets.c` | Render targets and `CreateImageFromTexture`. |
 | `src/gen_dispatch.c`, `src/gen_enums.c` | Generated. Committed. |
 | `gen/generate.py` | The generator. Run it with `build gen`. |
-| `m/` | The convenience layer, help text, opcodes, the path setup, the font search, the gradient polyline, the demo. |
+| `m/` | The convenience layer, help text, opcodes, the path setup, the font search, the gradient polyline, the demos. |
 | `tests/` | The suite that needs no GPU, plus `tests/gl/` and `smoke_gl.c`. |
-| `perf/` | The timings of SPEC 9.4. |
+| `perf/` | The timings of SPEC 9.4, and the cost of `SetContext`. |
+| `tools/CaptureReadmeScreenshot.m` | Makes `docs/images/psychnanovg-demo.png`, the picture at the top of this file. |
 
 ## Regenerate the binding
 
@@ -483,15 +578,16 @@ reported. The generator does not guess.
 | `psychnanovg:Usage` | Wrong number of arguments. |
 | `psychnanovg:UnknownCommand` | No such subcommand or opcode. |
 | `psychnanovg:NotInit` | `Init` is required first. |
-| `psychnanovg:AlreadyInit` | `Init` was called twice. |
+| `psychnanovg:AlreadyInit` | Not raised since version 0.2.0. A second `Init` makes a second context. |
 | `psychnanovg:NoGLContext` | An OpenGL subcommand ran with no current context. |
 | `psychnanovg:GLInit` | The loader or `nvgCreateGL3` failed. |
 | `psychnanovg:GLError` | OpenGL reported an error in `EndFrame`. |
 | `psychnanovg:FrameState` | A frame error. See R8. |
-| `psychnanovg:Handle` | Unknown font, image, paint, or render target handle. |
+| `psychnanovg:Handle` | Unknown font, image, paint, render target, or context handle. |
 | `psychnanovg:Font` | The font file was not found or not read. |
 | `psychnanovg:Type` | Wrong argument class. |
-| `psychnanovg:Range` | A numeric argument is out of range. |
+| `psychnanovg:Range` | A numeric argument is out of range, or all 16 contexts are in use. |
+| `psychnanovg:Context` | The OpenGL context that is current belongs to another window than the current context. |
 
 ## License
 

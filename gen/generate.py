@@ -586,10 +586,12 @@ HANDWRITTEN = [
      "system font directories for a TTF or OTF file whose name matches, and "
      "returns '' when there is none. The search itself lives in "
      "PsychNanoVGFonts.m, so it is easy to extend."),
-    ("Init", "h_Init", 0, 1, 0, "PNVG_F_GL", "Lifecycle",
-     "PsychNanoVG('Init' [, opts]). Loads GL entry points and creates the "
-     "context. opts fields: antialias, stencilStrokes, debug, renderer "
-     "('gl3', 'gl2', or 'null' for tests)."),
+    ("Init", "h_Init", 0, 1, 1, "PNVG_F_GL", "Lifecycle",
+     "ctx = PsychNanoVG('Init' [, opts]). Loads GL entry points, creates a "
+     "context in the GL context that is current, makes it the current "
+     "context, and returns its handle. One context per Psychtoolbox window. "
+     "opts fields: antialias, stencilStrokes, debug, renderer ('auto', the "
+     "backend of the build, or 'null' for tests)."),
     ("Opcode", "h_Opcode", 1, 1, 1, "0", "Lifecycle",
      "op = PsychNanoVG('Opcode', 'LineTo'). The numeric opcode of a "
      "subcommand. Passing the opcode instead of the name skips the name lookup."),
@@ -637,13 +639,22 @@ HANDWRITTEN = [
      "PsychNanoVG('ResetFallbackFonts', baseFont). Drops the fallback fonts "
      "of the named font. Raises psychnanovg:Handle when no font has that "
      "name."),
-    ("Shutdown", "h_Shutdown", 0, 0, 0, "0", "Lifecycle",
-     "PsychNanoVG('Shutdown'). Deletes render targets, images, fonts, and the "
-     "context. Call it inside Screen('BeginOpenGL')."),
+    ("SetContext", "h_SetContext", 0, 1, 1, "0", "Lifecycle",
+     "prev = PsychNanoVG('SetContext', ctx). Makes ctx the current context "
+     "and returns the handle that was current, 0 for none. Every other "
+     "subcommand acts on the current context. PsychNanoVG('SetContext') "
+     "with no handle returns the current one and changes nothing."),
+    ("Shutdown", "h_Shutdown", 0, 1, 0, "0", "Lifecycle",
+     "PsychNanoVG('Shutdown' [, ctx]). Deletes the render targets, images, "
+     "fonts, and NanoVG context of ctx, or of the current context. Call it "
+     "inside Screen('BeginOpenGL') for the window of ctx. "
+     "PsychNanoVG('Shutdown', 'all') deletes every context. The MEX file "
+     "unlocks when no context is left."),
     ("Stats", "h_Stats", 0, 1, 1, "0", "Lifecycle",
      "s = PsychNanoVG('Stats' [, 'reset']). Per subcommand calls, totalNs, and "
-     "maxNs, plus per frame endFrameNs, gpuNs, and NanoVG draw counters. "
-     "gpuNs is NaN when the context has no GL timer queries."),
+     "maxNs, plus per frame endFrameNs, gpuNs, and NanoVG draw counters, all "
+     "for the current context. gpuNs is NaN when the context has no GL "
+     "timer queries."),
     ("StrokeSegments", "h_StrokeSegments", 2, 2, 0, "PNVG_F_INIT|PNVG_F_FRAME",
      "Batch",
      "PsychNanoVG('StrokeSegments', seg, rgba). seg is Nx4 [x0 y0 x1 y1], "
@@ -654,7 +665,8 @@ HANDWRITTEN = [
      "stroke paint. See PsychNanoVGPolylineGradient."),
     ("Version", "h_Version", 0, 0, 1, "0", "Lifecycle",
      "v = PsychNanoVG('Version'). Struct with nanovg, psychnanovg, backend, "
-     "glVersion, glRenderer, and build."),
+     "glVersion, glRenderer, build, context (the current handle, 0 for "
+     "none), and contexts (every open handle)."),
 ]
 
 
@@ -986,6 +998,13 @@ def emit_help_m(bindings, cmds, path, version):
     L.append("%   PsychNanoVGOp, as the first argument. Call every subcommand")
     L.append("%   between Screen('BeginOpenGL') and Screen('EndOpenGL').")
     L.append("%")
+    L.append("%   Each Psychtoolbox window gets its own context: ctx =")
+    L.append("%   PsychNanoVG('Init') inside the OpenGL region of that window.")
+    L.append("%   Every other subcommand acts on the current context, which is")
+    L.append("%   the one that Init made last or that SetContext chose. The")
+    L.append("%   helpers PsychNanoVGOpen, PsychNanoVGFrame, PsychNanoVGGL, and")
+    L.append("%   PsychNanoVGClose select the context of their window for you.")
+    L.append("%")
     L.append("%%   Version: %s" % version)
     L.append("%")
     groups = {}
@@ -1000,7 +1019,7 @@ def emit_help_m(bindings, cmds, path, version):
             L.append("%%%%     %-24s %s" % (name, first))
         L.append("%")
     L.append("%   See also PsychNanoVGOp, PsychNanoVGFonts, PsychNanoVGDemo,")
-    L.append("%   PsychNanoVGPolylineGradient.")
+    L.append("%   PsychNanoVGPolylineGradient, PsychNanoVGTwoWindowDemo.")
     L.append("")
     L.append("msg = ['The PsychNanoVG MEX file is not on the path. ', ...")
     L.append("       'Run build, then call PsychNanoVGSetup, which adds ', ...")
@@ -1240,7 +1259,7 @@ def main():
             dropped.append((cname, str(e)))
 
     bindings.sort(key=lambda b: b.mname)
-    version = "0.1.0+nanovg.%s" % nanovg_commit()
+    version = "0.2.0+nanovg.%s" % nanovg_commit()
 
     cmds = emit_dispatch(bindings, os.path.join(ROOT, "src", "gen_dispatch.c"),
                          version)

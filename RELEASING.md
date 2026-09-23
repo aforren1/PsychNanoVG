@@ -11,7 +11,9 @@ one zip per engine and platform. You never build release binaries by hand.
 - You know the new version. Before 1.0: a new subcommand or helper bumps the
   minor number, a fix bumps the patch number. A change that breaks a script
   that worked before bumps the minor number and gets a line in the release
-  notes that says so.
+  notes that says so. A new subcommand also moves the opcodes of every
+  subcommand whose name sorts after it, so a script that hard-codes opcode
+  numbers instead of using `PsychNanoVGOp` breaks; say so in the notes.
 
 ## 1. Set the version
 
@@ -20,8 +22,12 @@ into the sources, so `build gen` is part of a version change here:
 
 | File | Line | Reaches |
 |---|---|---|
-| `src/psychnanovg.c` | `#define PNVG_VERSION "0.1.0"` | `PsychNanoVG('Version').psychnanovg` |
-| `gen/generate.py` | `version = "0.1.0+nanovg.%s" % nanovg_commit()` | `pnvg_version_string` in `src/gen_dispatch.c` and the `Version:` line of `m/PsychNanoVG.m` |
+| `src/psychnanovg.c` | `#define PNVG_VERSION "0.2.0"` | `PsychNanoVG('Version').psychnanovg` |
+| `gen/generate.py` | `version = "0.2.0+nanovg.%s" % nanovg_commit()` | `pnvg_version_string` in `src/gen_dispatch.c` and the `Version:` line of `m/PsychNanoVG.m` |
+
+0.2.0 is the first release number after 0.1.0. It adds `StrokeSegments`
+(phase 2) and `SetContext` (phase 3), both of which moved opcodes, and a
+second `Init` no longer raises `psychnanovg:AlreadyInit`.
 
 Set both to the same number, then run `build gen` in either engine so
 `src/gen_dispatch.c` and `m/PsychNanoVG.m` carry it. Commit the regenerated
@@ -30,8 +36,9 @@ files; users build without Python.
 ## 2. Verify locally
 
 Run both engines. Each command builds, then runs the suite. Under MATLAB
-with Psychtoolbox installed the suite also runs the three `tests/gl` files
-against a real window; under Octave they report as skipped.
+with Psychtoolbox installed the suite also runs the five `tests/gl` files
+against real windows, one of them with two windows at once; under Octave
+they report as skipped.
 
 ```
 "C:\Program Files\MATLAB\R2023a\bin\matlab.exe" -batch "build test"
@@ -45,8 +52,16 @@ the GL tests. Then the demo, in MATLAB:
 PsychNanoVGDemo([], 5)
 ```
 
-Expect exit without error and an `EndFrame` timing line. `build smoke` runs
-the native GL smoke test as well; it needs no engine.
+Expect exit without error and an `EndFrame` timing line. Then
+`PsychNanoVGTwoWindowDemo([], 5)`: expect two windows and one timing line
+per context. `build smoke` runs the native GL smoke test as well; it needs
+no engine.
+
+When the demo changed, make the README picture again and look at it:
+
+```
+"C:\Program Files\MATLAB\R2023a\bin\matlab.exe" -batch "addpath('tools'); CaptureReadmeScreenshot"
+```
 
 ## 3. Update the documents
 

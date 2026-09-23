@@ -13,17 +13,9 @@
 #define PNVG_MAX_GLYPHS 2048
 #define PNVG_MAX_ROWS   256
 
-/* The GL backend is chosen when the static library is compiled, because
- * nanovg_gl.h is a single implementation unit. SPEC 4.1: Psychtoolbox makes
- * legacy GL 2.1 contexts on macOS, so that build is GL2 and every other one
- * is GL3. build.m passes PNVG_GL2 to mex to match CMake. */
-#if defined(PNVG_GL2)
-#  define PNVG_BACKEND_BUILT PNVG_BACKEND_GL2
-#  define PNVG_BACKEND_NAME  "gl2"
-#else
-#  define PNVG_BACKEND_BUILT PNVG_BACKEND_GL3
-#  define PNVG_BACKEND_NAME  "gl3"
-#endif
+/* PNVG_BACKEND_BUILT comes from core/pnvg_core.h. build.m passes the same
+ * PNVG_GL2 or PNVG_GLES define to mex that CMake gives the library, so the
+ * MEX and the library agree on the backend. */
 
 /* Command flags checked by the dispatcher before the handler runs. */
 #define PNVG_F_INIT  0x1u   /* needs a live context */
@@ -59,6 +51,8 @@ extern const pnvg_enum pnvg_enums[];
 extern const int pnvg_nenums;
 extern const char *const pnvg_version_string;
 
-#define PNVG_VG (pnvg_state_get()->vg)
+/* One load of the current-context pointer and one of its field. The
+ * pointer is never NULL (see pnvg_cur), so there is no branch. */
+#define PNVG_VG (pnvg_cur->vg)
 
 #endif /* PNVG_INTERNAL_H */

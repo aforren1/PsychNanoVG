@@ -3,9 +3,13 @@ function PsychNanoVGClose(vg)
 %
 %   PsychNanoVGClose(vg)
 %
-%   Deletes the render targets, the images, the fonts, and the context, and
-%   unlocks the MEX file. Put it in an onCleanup or a catch block so a script
-%   that fails still gives the graphics driver its objects back.
+%   Deletes the render targets, the images, the fonts, and the context of
+%   `vg`. The MEX file unlocks when no context is left. Put the call in an
+%   onCleanup or a catch block so a script that fails still gives the
+%   graphics driver its objects back.
+%
+%   The context of another window stays open, and stays current if it was.
+%   When `vg` was the current context, no context is current afterwards.
 %
 %   The call is safe twice, and safe after the window is already closed. A
 %   context that outlives its window cannot delete its OpenGL objects, so the
@@ -35,10 +39,16 @@ function PsychNanoVGClose(vg)
     end
 
     try
-        PsychNanoVG('Shutdown');
+        if isstruct(vg) && isfield(vg, 'ctx') && vg.ctx > 0
+            PsychNanoVG('Shutdown', vg.ctx);
+        else
+            PsychNanoVG('Shutdown');
+        end
     catch err
-        % A second close, or a close with no context, is not a failure.
-        if ~strcmp(err.identifier, 'psychnanovg:NotInit')
+        % A second close, or a close with no context, is not a failure. The
+        % handle of a closed context is stale, which is the Handle error.
+        if ~any(strcmp(err.identifier, ...
+                       {'psychnanovg:NotInit', 'psychnanovg:Handle'}))
             if inRegion
                 end_gl(win);
             end

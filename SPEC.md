@@ -1,6 +1,6 @@
 # PsychNanoVG specification
 
-Status: implemented through phase 2. Specification version 0.1, 2026-09-22; section 14 records every deviation. The phase 2 additions to sections 5 and 7 are marked "phase 2".
+Status: implemented through phase 3. Specification version 0.1, 2026-09-22; section 14 records every deviation. The phase 2 additions to sections 5 and 7 are marked "phase 2", and the phase 3 additions to sections 1, 5, 7, 8, 9, and 13 are marked "phase 3".
 
 `PsychNanoVG` is a MEX binding of NanoVG for MATLAB and GNU Octave. NanoVG is a
 small antialiased 2D vector graphics library on OpenGL. The binding draws
@@ -26,7 +26,8 @@ profiles, gradient fills, vector icons, and text with sub-pixel positioning.
 ### 1.2 In scope
 
 - One NanoVG context per MATLAB or Octave process, bound to one PTB onscreen
-  window.
+  window. Phase 3: one context per PTB onscreen window, up to 16 in one
+  process (section 8.5).
 - The complete NanoVG public API except the pieces listed in section 7.3, about
   95 functions, generated from `nanovg.h`.
 - Batched path subcommands that take whole matrices, so a 10,000-point path is
@@ -242,14 +243,15 @@ becomes `BeginPath`, `nvgRoundedRectVarying` becomes `RoundedRectVarying`.
 
 | Subcommand | GL | Signature | Notes |
 |---|---|---|---|
-| Init | yes | `PsychNanoVG('Init' [, opts])` | Loads GL entry points, creates the context with `nvgCreateGL3` (or GL2 on macOS). `opts` fields: `antialias` (default true), `stencilStrokes` (default true), `debug` (default false), `logLevel`. `mexLock`, `mexAtExit`. Errors `psychnanovg:AlreadyInit`, `psychnanovg:GLInit`. |
-| Shutdown | yes | `PsychNanoVG('Shutdown')` | Deletes render targets, images, fonts, and the context. `mexUnlock`. |
+| Init | yes | `PsychNanoVG('Init' [, opts])` | Loads GL entry points, creates the context with `nvgCreateGL3` (or GL2 on macOS). `opts` fields: `antialias` (default true), `stencilStrokes` (default true), `debug` (default false), `logLevel`. `mexLock`, `mexAtExit`. Errors `psychnanovg:AlreadyInit`, `psychnanovg:GLInit`. Phase 3: `ctx = PsychNanoVG('Init' [, opts])` returns a context handle and makes the new context current. A second `Init` makes a second context and is not an error. |
+| Shutdown | yes | `PsychNanoVG('Shutdown')` | Deletes render targets, images, fonts, and the context. `mexUnlock`. Phase 3: `PsychNanoVG('Shutdown' [, ctx])` acts on `ctx`, or on the current context when there is no handle. `PsychNanoVG('Shutdown', 'all')` deletes every context. `mexUnlock` when no context is left. |
+| SetContext | no | `prev = PsychNanoVG('SetContext' [, ctx])` | Phase 3. Makes `ctx` the current context and returns the handle that was current, 0 for none. With no handle, returns the current one and changes nothing. `SetContext(0)` leaves no context current. A handle that is not open raises `psychnanovg:Handle`. |
 | BeginFrame | yes | `PsychNanoVG('BeginFrame', w, h [, pixelRatio=1])` | Saves viewport and blend state, sets viewport, calls `nvgBeginFrame`. |
 | EndFrame | yes | `PsychNanoVG('EndFrame')` | `nvgEndFrame`, restore state, GL error drain. Records frame statistics. |
 | CancelFrame | no | `PsychNanoVG('CancelFrame')` | `nvgCancelFrame`. |
-| Version | no | `v = PsychNanoVG('Version')` | Struct: `nanovg` (commit), `psychnanovg`, `backend` (`GL3` or `GL2`), `glVersion`, `glRenderer`, `build`. |
+| Version | no | `v = PsychNanoVG('Version')` | Struct: `nanovg` (commit), `psychnanovg`, `backend` (`GL3` or `GL2`), `glVersion`, `glRenderer`, `build`. Phase 3: `backend` can also be `GLES2` or `GLES3`, the backend and GL fields describe the current context, and two fields are new: `context`, the current handle or 0, and `contexts`, a row of every open handle, oldest first. |
 | Opcode | no | `op = PsychNanoVG('Opcode', 'LineTo')` | Numeric opcode. |
-| Stats | no | `s = PsychNanoVG('Stats' [, 'reset'])` | Section 9.2. |
+| Stats | no | `s = PsychNanoVG('Stats' [, 'reset'])` | Section 9.2. Phase 3: the statistics of the current context. |
 | Enum | no | `v = PsychNanoVG('Enum', 'NVG_ALIGN_CENTER')` | Value from the generated enum table. Also accepts `'ALIGN_CENTER|ALIGN_MIDDLE'`. |
 | FindSystemFont | no | `path = PsychNanoVG('FindSystemFont', family)` | Searches the OS font directories for a TTF or OTF file whose name matches. Returns `''` when not found. Implemented in `PsychNanoVGFonts.m`, not in the MEX. |
 
@@ -295,16 +297,19 @@ Grouped as in `nanovg.h`:
 | `m/PsychNanoVG.m` | Help text only. Generated. |
 | `m/PsychNanoVGOp.m` | Generated opcode constants. |
 | `m/PsychNanoVGSetup.m` | Puts `dist/<arch>` and `m/` on the path, in that order. |
-| `m/PsychNanoVGOpen.m` | `vg = PsychNanoVGOpen(win [, opts])`. Checks that 3D graphics are on, then `Init` inside one OpenGL region, and loads a default sans font. Returns a struct with `win`, `rect`, `opened`, and `fonts`. |
-| `m/PsychNanoVGFrame.m` | `PsychNanoVGFrame('Begin', vg [, w, h])` and `('End', vg)`. The frame and the OpenGL region together. The default size is the window rect. |
-| `m/PsychNanoVGGL.m` | `[...] = PsychNanoVGGL(vg, subcommand, ...)`. One OpenGL subcommand inside one region. Passes through when a region is already open. |
-| `m/PsychNanoVGClose.m` | `PsychNanoVGClose(vg)`. `Shutdown` inside one region. Safe twice, and safe after the window is closed. |
+| `m/PsychNanoVGOpen.m` | `vg = PsychNanoVGOpen(win [, opts])`. Checks that 3D graphics are on, then `Init` inside one OpenGL region, and loads a default sans font. Returns a struct with `win`, `rect`, `opened`, and `fonts`. Phase 3: also `ctx`, the handle from `Init`. Call it once per window. |
+| `m/PsychNanoVGFrame.m` | `PsychNanoVGFrame('Begin', vg [, w, h])` and `('End', vg)`. The frame and the OpenGL region together. The default size is the window rect. Phase 3: both operations make `vg.ctx` current first. |
+| `m/PsychNanoVGGL.m` | `[...] = PsychNanoVGGL(vg, subcommand, ...)`. One OpenGL subcommand inside one region. Passes through when a region is already open. Phase 3: makes `vg.ctx` current first, and leaves it current. |
+| `m/PsychNanoVGClose.m` | `PsychNanoVGClose(vg)`. `Shutdown` inside one region. Safe twice, and safe after the window is closed. Phase 3: `Shutdown(vg.ctx)`; the context of another window stays open and stays current. |
 | `m/PsychNanoVGFonts.m` | `FindSystemFont` implementation per OS. |
 | `m/PsychNanoVGPolylineGradient.m` | Phase 2. `[seg, col] = PsychNanoVGPolylineGradient(xy, rgba)`. A polyline with one color per vertex: builds the segment and color matrices of `StrokeSegments` from an Nx2 polyline and Nx4 colors, and draws them in one call. |
-| `m/PsychNanoVGDemo.m` | Demo: antialiased ring stimulus with gradient edge, a Bezier trajectory, text with metrics, a cached render target, and (phase 2) a gauge built from arcs and a wave with one color per vertex. |
+| `m/PsychNanoVGDemo.m` | Demo: antialiased ring stimulus with gradient edge, a Bezier trajectory, text with metrics, a cached render target, and (phase 2) a gauge built from arcs and a wave with one color per vertex. Phase 3: the eyes of the upstream NanoVG demo, built from `Path` matrices of ellipses, and an `opts` argument that fixes the frame for `tools/CaptureReadmeScreenshot.m`. |
+| `m/PsychNanoVGTwoWindowDemo.m` | Phase 3. Two small windows on one screen, one context each, flipped together. Falls back to one window with two contexts, the second one drawing into a render target, when a second window does not open. |
 
 Every one of the four uses `Screen('EndOpenGL')` on the error path as well as
-on the normal path. A MEX error inside a wrapped region therefore still
+on the normal path. Phase 3: a struct that has no `ctx` field, such as one
+built by hand, makes the helpers act on the current context, as they did
+before. A MEX error inside a wrapped region therefore still
 leaves Psychtoolbox in 2D drawing mode, which is what keeps the next `Screen`
 command correct.
 
@@ -315,7 +320,7 @@ command correct.
 | `psychnanovg:Usage` | Wrong number or class of arguments. |
 | `psychnanovg:UnknownCommand` | Subcommand or opcode not found. |
 | `psychnanovg:NotInit` | `Init` required. |
-| `psychnanovg:AlreadyInit` | `Init` called twice. |
+| `psychnanovg:AlreadyInit` | `Init` called twice. Phase 3: not raised; a second `Init` makes a second context. |
 | `psychnanovg:NoGLContext` | GL subcommand without a current context. |
 | `psychnanovg:GLInit` | GL loader or `nvgCreateGL3` failed. |
 | `psychnanovg:GLError` | `glGetError` reported an error in `EndFrame`. |
@@ -323,7 +328,8 @@ command correct.
 | `psychnanovg:Handle` | Unknown font, image, paint, or render target handle. |
 | `psychnanovg:Font` | Font file not found or not parseable. |
 | `psychnanovg:Type` | Argument class not accepted. |
-| `psychnanovg:Range` | Numeric argument out of range. |
+| `psychnanovg:Range` | Numeric argument out of range. Phase 3: also a seventeenth context. |
+| `psychnanovg:Context` | Phase 3. The GL context that is current is not the one the current NanoVG context was made in (section 8.5). |
 
 ## 6. Coordinates, color, and text
 
@@ -392,7 +398,8 @@ of it is wanted.
 
 - `nvgCreateInternal`, `nvgDeleteInternal`, `nvgInternalParams`, `nvgDebugDumpPathCache`.
 - `nvgCreateFontMem` with `freeData = 1`; the MEX always copies and passes 0.
-- The GLES2 and GLES3 backends.
+- The GLES2 and GLES3 backends. Phase 3: a Linux build option,
+  `PSYCHNANOVG_GLES`, that replaces the GL3 backend (section 14.8).
 
 ### 7.4 Batched matrix encodings (phase 2)
 
@@ -464,6 +471,15 @@ Fonts and images are NanoVG integer ids and pass through unchanged. The MEX
 keeps a bitset of live image ids so `DeleteImage` on an unknown id raises
 `psychnanovg:Handle` instead of asserting inside NanoVG.
 
+Phase 3: the struct above exists once per context, on the heap, and holds
+the GL context that was current at `Init`, the GPU timer ring, the frame
+statistics, and the per-subcommand statistics as well. A table of 16 slots
+holds the contexts, and one global pointer names the current one. With no
+context current, the pointer names an empty struct whose `vg` is NULL, so the
+per-call test for a context is one load and needs no NULL check of the
+pointer. The deferred error buffer is one per process, because an `Init` that
+fails has no context to hold its message.
+
 ### 8.2 Init sequence
 
 1. Check for a current GL context.
@@ -477,6 +493,11 @@ keeps a bitset of live image ids so `DeleteImage` on an unknown id raises
    `psychnanovg:GLInit` on NULL.
 5. `mexLock`, `mexAtExit`.
 
+Phase 3: before step 2 a free slot is taken, or `psychnanovg:Range` raised.
+After step 1 the current GL context is recorded. The timer queries of the
+context are created after step 4. The new context gets the next handle and
+becomes current. `mexLock` runs once for any number of contexts.
+
 ### 8.3 Frame sequence
 
 `BeginFrame`: check `inFrame == 0`, save `GL_VIEWPORT`, `GL_BLEND`,
@@ -487,6 +508,11 @@ keeps a bitset of live image ids so `DeleteImage` on an unknown id raises
 `EndFrame`: `nvgEndFrame(vg)`, restore the saved state, `glGetError` drain,
 clear `inFrame`, record statistics.
 
+Phase 3: `BeginFrame`, `EndFrame`, and `CancelFrame` first compare the GL
+context that is current with the one recorded at `Init`, and raise
+`psychnanovg:Context` on a mismatch before any GL call. A frame that `EndFrame`
+refuses stays open, so the script can open the right region and end it.
+
 ### 8.4 Errors
 
 NanoVG has no assert hook. Its internal asserts are C `assert`, compiled out
@@ -494,6 +520,24 @@ in release builds. The MEX validates handles and frame state before calling
 NanoVG so that release builds never reach an invalid state. GL errors are
 reported through `psychnanovg:GLError` from `EndFrame` and from the image and
 render target subcommands.
+
+### 8.5 Contexts (phase 3)
+
+Psychtoolbox gives each onscreen window its own userspace GL context, and
+the contexts of two windows share no objects (section 14.8). A NanoVG
+context holds program, buffer, texture, framebuffer, and query names that
+exist only in the GL context it was made in, so the binding keeps one
+NanoVG context per window.
+
+| Rule | Statement |
+|---|---|
+| C1 | `Init` makes a context in the GL context that is current, makes it the current NanoVG context, and returns its handle. Handles count up from 1 and are never reused, so a stale handle cannot name a newer context. |
+| C2 | Every subcommand except `Init`, `SetContext`, `Shutdown`, and the pure ones acts on the current context. |
+| C3 | Every subcommand that issues GL calls compares the GL context that is current with the one recorded at `Init`. A mismatch raises `psychnanovg:Context` before any GL call; no current GL context raises `psychnanovg:NoGLContext`. The null renderer has no GL context and is never checked. |
+| C4 | `Shutdown` of a context whose GL context is current deletes its GL objects. With any other GL context current, or none, it frees the memory, makes no GL call, and warns with `psychnanovg:NoGLContext`; the driver deletes the objects with their GL context. A GL delete in the wrong context would delete objects of the same name that belong to it. |
+| C5 | `Shutdown` of the current context leaves no context current. `Shutdown` of another context keeps the current one. |
+| C6 | The MEX file is locked while one context or more is open, and unlocked when the last one goes. `mexAtExit` deletes every context under C4. |
+| C7 | The helpers take the context from the struct of their window, so a script that uses only the helpers never calls `SetContext`. |
 
 ## 9. Performance and profiling
 
@@ -518,7 +562,8 @@ Always compiled unless `PSYCHNANOVG_STATS=0`. Per subcommand `calls`,
 `GL_TIMESTAMP` query pair read two frames later; `drawCalls`, `fillCount`,
 `strokeCount`, `textCount`, and `vertexCount` from NanoVG's internal counters
 when built with `NANOVG_STATS`. Phase 2: `gpuNs` is NaN when the context has
-no timer queries (section 14.7).
+no timer queries (section 14.7). Phase 3: all of it is per context, and
+`Stats` reports the current one.
 
 ### 9.3 Tracy
 
@@ -655,14 +700,16 @@ section 9.4.
 |---|---|
 | 1 | Lifecycle, generator, all generated subcommands, batched paths, paints, fonts, images from files and arrays, `Stats`, null-renderer tests, GL tests, demo. |
 | 2 | Render targets and `CreateImageFromTexture` (both delivered in phase 1), Tracy GPU zones, `Path` matrix form with arcs, per-vertex color polylines through `LinearGradient` helpers. Delivered; section 14.7 records the differences. |
-| 3 | Multiple contexts for multiple PTB windows, GLES backends if PTB on embedded Linux needs them. |
+| 3 | Multiple contexts for multiple PTB windows, GLES backends if PTB on embedded Linux needs them. Delivered; section 14.8 records the differences. |
 
 ## 14. Deviations from version 0.1
 
-Phases 1 and 2 are implemented. This section records every place where the
-implementation differs from sections 1 to 13, and the reason. Sections 1 to 13
-hold the version 0.1 text, except the phase 2 additions to sections 5, 7, 9.2,
-and 13, which are marked "phase 2". Section 14.7 holds the phase 2 rows.
+Phases 1, 2, and 3 are implemented. This section records every place where
+the implementation differs from sections 1 to 13, and the reason. Sections 1
+to 13 hold the version 0.1 text, except the phase 2 additions to sections 5,
+7, 9.2, and 13, which are marked "phase 2", and the phase 3 additions to
+sections 1.2, 5, 7.3, 8, 9.2, and 13, which are marked "phase 3". Section
+14.7 holds the phase 2 rows and section 14.8 the phase 3 rows.
 
 ### 14.1 Dependencies and build
 
@@ -682,7 +729,7 @@ and 13, which are marked "phase 2". Section 14.7 holds the phase 2 rows.
 
 | Deviation | Reason |
 |---|---|
-| 96 generated subcommands and 24 hand-written ones, 120 in total (119 before phase 2 added `StrokeSegments`). Section 1.2 estimates about 95 generated. | The count includes `CreateImageMem`, `CreateFontMemAtIndex`, and the three composite operation setters, which section 7.3 does not exclude. |
+| 96 generated subcommands and 24 hand-written ones, 120 in total (119 before phase 2 added `StrokeSegments`; 121 since phase 3 added `SetContext`). Section 1.2 estimates about 95 generated. | The count includes `CreateImageMem`, `CreateFontMemAtIndex`, and the three composite operation setters, which section 7.3 does not exclude. |
 | `nvgBeginFrame`, `nvgEndFrame`, and `nvgCancelFrame` are excluded from generation. | Section 5.1 gives all three hand-written handlers that also save and restore GL state, set the viewport, drain GL errors, and record statistics. Two commands cannot share one name. The generator now refuses a duplicate name instead of emitting one. |
 | `nvgResetFallbackFonts` is excluded from generation and hand-written. | It passes the result of `nvgFindFont` straight to `fonsResetFallbackFont`, which indexes `stash->fonts` with it and never checks it. An unknown family name is -1 there, so the generated wrapper turned a typo in a script into a process crash. The hand-written handler resolves the name and raises `psychnanovg:Handle`. This was found by the generated marshaling test. |
 | Font handles are validated the same way section 8.1 validates image handles, with a high water mark instead of a bitset. `int font`, `int baseFont`, and `int fallbackFont` all go through the check, and a bad handle raises `psychnanovg:Handle`. | `fonsAddFallbackFont` and `fonsResetFallbackFont` dereference `stash->fonts[id]` with no check of their own, and an unused slot holds NULL. Section 8.4 requires the MEX to validate handles before it calls NanoVG; section 8.1 lists only images. Fontstash ids count up from 0 and are never freed, so one count is enough. |
@@ -747,10 +794,12 @@ Psychtoolbox `Screen` MEX does not load.
 | Item | State |
 |---|---|
 | `tests/gl/` under Octave | Not run. The Psychtoolbox `Screen.mex` for Octave on this machine fails to load with Windows error 126. `run_tests` reports the directory as skipped. Under MATLAB the same tests run and pass. |
-| Linux | Built and tested. Octave 6.4.0 on Ubuntu 22.04 under WSL passes the same 201 assertions as Octave on Windows, and `smoke_gl` passes all of its checks under Xvfb with llvmpipe. |
+| Linux | Built and tested. Octave 6.4.0 on Ubuntu 22.04 under WSL passes the same 348 assertions as Octave on Windows (phase 3), and `smoke_gl` passes all of its checks under Xvfb, and in an EGL pbuffer with the GLES2 and GLES3 backends. |
+| Two Psychtoolbox windows (phase 3) | `tests/gl/test_gl_contexts` and `m/PsychNanoVGTwoWindowDemo` ran with two real windows under MATLAB R2023a on Windows 11 with Intel Iris Xe, on 2026-09-23. Not run on Linux or macOS with Psychtoolbox. |
+| GLES in a Psychtoolbox window (phase 3) | Not run. No Psychtoolbox Waffle build is installed on the development machine. The GLES backends pass `smoke_gl` in an EGL pbuffer, and a GLES3 MEX passes the null renderer suite, under WSL (section 14.8). |
 | macOS | Built and tested by CI on Apple silicon (section 12.3). No one on the team has run it on a Mac with a display. The phase 2 GPU timer and Tracy GPU zone code is compiled there but not run against a Psychtoolbox window. |
-| The GitHub Actions workflow | Runs on every push, green on Linux, Windows, and macOS at commit 33888c1. |
-| `m/PsychNanoVGDemo.m` | Run for two seconds under MATLAB R2023a on 2026-09-22, with the phase 2 gauge and wave. It exits without an error and prints the `EndFrame` line. Not inspected by eye for more than that. |
+| The GitHub Actions workflow | Runs on every push, green on Linux, Windows, and macOS at commit fab9db0. The phase 3 changes, including the GLES compile step and the second GL context of the macOS smoke test, have not run on CI yet. |
+| `m/PsychNanoVGDemo.m` | Run for two seconds under MATLAB R2023a on 2026-09-22, with the phase 2 gauge and wave. It exits without an error and prints the `EndFrame` line. Phase 3: run again with the eyes on 2026-09-23, full screen and at 1280x720 through `tools/CaptureReadmeScreenshot.m`; the captured frame, `docs/images/psychnanovg-demo.png`, was inspected. |
 | Render target binds nest: the core keeps a stack of bound targets, and `RenderTargetBind` refuses a target that is already on it. Section 5.3 described one bound target at a time. | The macOS smoke test binds an offscreen target for the whole run because a drawable-less CGL context has no default framebuffer, and the render target round trip inside it used to overwrite the single "bound target" record, so the outer unbind reported nothing bound. `RenderTargetUnbind` now returns to the framebuffer that was current before the innermost bind, `RenderTargetDelete` of a bound target unwinds to it, binding the same target twice raises `psychnanovg:FrameState`, and the MEX handlers map the core status codes onto the section 5.5 identifiers instead of assuming `Handle`. `tests/gl/test_gl_target.m` covers the nesting. |
 
 ### 14.7 Phase 2
@@ -801,3 +850,109 @@ The call cost is NanoVG's stroke tessellation, which runs inside
 each stroke is three draws. A script that needs thousands of segments per
 frame and no overlap correction can turn `stencilStrokes` off in `Init`,
 which draws each stroke in one pass.
+
+### 14.8 Phase 3
+
+Phase 3 was implemented on 2026-09-23. The rows below record where it differs
+from sections 1 to 13, or adds to them. Section 8.5 holds the context rules.
+
+#### Psychtoolbox and GL contexts
+
+These facts come from the Psychtoolbox 3.0.22 source tree,
+`PsychSourceGL/Source/`, and decide the design.
+
+- `Screen('BeginOpenGL', win)` (`Common/Screen/SCREENglMatrixFunctionWrappers.c`)
+  calls `PsychOSSetUserGLContext(windowRecord, ...)`, which makes that
+  window's `targetSpecific.glusercontextObject` current.
+- Each onscreen window creates its own userspace context, which shares
+  objects only with the Psychtoolbox context of the same window: on Windows
+  `wglCreateContext(hDC)` then `wglShareLists(contextObject,
+  glusercontextObject)` (`Windows/Screen/PsychWindowGlue.c`); on Linux
+  `glXCreateContext(dpy, visinfo, contextObject, True)` or its
+  `glXCreateNewContext` form (`Linux/Screen/PsychWindowGlue.c`); on Linux
+  with Waffle `waffle_context_create(config, contextObject)`. Two windows
+  share objects only as a `slaveWindow` pair for dual-window stereo, and that
+  sharing is between their Psychtoolbox contexts, not their userspace ones.
+- An offscreen window copies the `targetSpecific` block of its parent onscreen
+  window (`PsychAssignParentWindow` in `Common/Screen/WindowBank.c`), so
+  `Screen('BeginOpenGL', offscreenWin)` makes the parent's userspace context
+  current. A context made for an onscreen window therefore also serves its
+  offscreen windows.
+
+#### GLES
+
+Section 13 asks for the GLES backends "if PTB on embedded Linux needs them".
+Psychtoolbox can make GLES contexts on Linux, so the backends are added as a
+build option:
+
+- `Linux/Screen/PsychWindowGlueWaffle.c`, compiled with `PTB_USE_WAFFLE`,
+  reads `PSYCH_USE_GFX_BACKEND` and selects `WAFFLE_CONTEXT_OPENGL_ES1`,
+  `_ES2`, or `_ES3` for `gles1`, `gles2`, or `gles3`. When the display
+  backend does not support desktop GL it falls back to ES1, then ES2, then
+  ES3. It records the choice as `glApiType` 10, 20, or 30, and the userspace
+  context comes from the same Waffle config, so it is GLES as well. The
+  display backends are GLX, X11/EGL, Wayland, GBM, and Android.
+- `linuxmakeitoctave3.m` builds Screen with Waffle in mode 100 (Wayland),
+  mode 101 (Waffle on desktop Linux), and mode 1000 ("embedded/android
+  devices": `PTB_USE_WAFFLE`, `PTB_USE_EGL`, `PTB_USE_GLES1`, linked
+  against `libGLESv1_CM`).
+- In the installed 3.0.22 tree, `PsychBasic/Octave5LinuxFiles64/Wayland/Screen.mex`
+  is a Waffle build: it holds `waffle_context_create` and the strings
+  `PSYCH_USE_GFX_BACKEND`, `gles1`, `gles2`, and `gles3`. The default Linux
+  builds, `Screen.mexa64` and `Octave5LinuxFiles64/Screen.mex`, and the
+  32-bit ARM build for the Raspberry Pi, `Octave3LinuxFilesARM/Screen.mex`,
+  are GLX builds with no Waffle. `PsychOneliners/IsGLES.m` reads the same
+  environment variable.
+
+So a desktop Linux user gets GLES from the shipped Wayland Screen with
+`PSYCH_USE_GFX_BACKEND=gles2` or `gles3`, and an embedded user from a mode
+1000 build. The Raspberry Pi build that ships is desktop GL.
+
+#### Deviations
+
+| Deviation | Reason |
+|---|---|
+| `Init` returns a context handle and makes the new context current. A second `Init` is a second context, not `psychnanovg:AlreadyInit`, which is no longer raised. | A window needs its own context (above), and a script with two windows calls `Init` twice. A single-window script that calls `Init` once, and ignores the output, runs as before. The only script that behaves differently is one that called `Init` twice and expected the error. Two contexts in one window are allowed too: they can differ in their create flags, for example one with `stencilStrokes` off for thousands of gradient segments. |
+| `SetContext` with no handle returns the current handle, and `SetContext(0)` leaves no context current. The handle that was current is the output of every call. | One subcommand serves the helpers, which only set, and a script that saves and restores the current context. A separate getter would have shifted the opcodes of one more group of subcommands. |
+| `Shutdown` takes an optional handle, or `'all'`. | A script with two windows shuts each down in its own region (rule C4). `'all'` clears the contexts of a script that failed before its cleanup, the way `sca` closes its windows; without it the only way to find such contexts is `Version().contexts`. |
+| Every subcommand with the GL flag checks the GL context, not only `BeginFrame`. The check replaced the "is any GL context current" test that the dispatcher already made, so it adds one pointer compare. | `CreateImageRGBA`, `CreateFont`, the render target subcommands, and `EndFrame` issue GL calls as well. In the wrong GL context each of them would work on the names of another window's objects. `CancelFrame`, which has no GL flag but restores GL state, checks in the core. |
+| At most 16 contexts. Handles count up from 1 and are never reused. | The table is scanned only by `SetContext` and `Shutdown`, never on the per-call path. The bound caps what repeated failed runs leave behind. A reused handle would let a stale struct from a closed window act on a new context. |
+| The current context is one global pointer, which names an empty state when no context is current. `PNVG_VG` became `pnvg_cur->vg` instead of a function call. | The per-call test for a context stays one load, with no NULL check of the pointer. Measured below. |
+| The per-subcommand statistics moved into the context. A call made while no context is current is not counted. | Section 13 asks for Stats per context. Before phase 3, calls such as `Version` before `Init` went into the one global table and survived the next `Init`'s reset. |
+| The GPU timer ring is per context. Tracy keeps one GPU context for the process, and each NanoVG context takes its own range of six query ids in it. | Query objects belong to one GL context. Tracy has at most 255 GPU contexts, and phase 2 already took one per process for that reason. |
+| The GL entry points are still loaded once per process. | All windows of one process run on one driver. Psychtoolbox initializes GLEW once in the same way. |
+| `Shutdown` with the wrong GL context, or none, now frees the context's memory: the NanoVG context, fontstash and its atlas, the render target records, and the paint table. Only the GL objects are left to the driver. In phase 2 that path cleared the state and leaked the memory. | The path is common with two windows: the context of a window that closed first. `src/pnvg_gl.c` replaces the two backend callbacks that issue GL calls during `nvgDeleteInternal`, `renderDeleteTexture` and `renderDelete`, with versions that only free memory. |
+| `Shutdown` in the right GL context drains GL errors afterwards. | A driver that already dropped a name makes `glDelete*` set an error, and `Screen('EndOpenGL')` aborts on a pending error. |
+| `mexAtExit` deletes every context, each under rule C4. | Phase 2 deleted the one context only when a GL context was current, and leaked it otherwise. |
+| `Version` has two new fields, `context` and `contexts`, and its `build` string names the backend. | Tests and scripts need to see the current context and every open one. With two backends per platform the build string has to say which. |
+| `SetContext` sorts between `Scissor` and `ShapeAntiAlias`, so it is opcode 85, and the opcodes of the 36 subcommands from `ShapeAntiAlias` to `Version` went up by one. There are 121 subcommands. The version is 0.2.0. | The opcode is the position in the sorted table (section 9.1). `RELEASING.md` asks for a minor version for a new subcommand. Phase 2 shifted opcodes and added `StrokeSegments` without a version change, and 0.2.0 covers both. |
+| `PsychNanoVGOpen` returns `vg.ctx`. `PsychNanoVGFrame` (both operations) and `PsychNanoVGGL` make it current before they act, and `PsychNanoVGGL` leaves it current. `PsychNanoVGClose` shuts down `vg.ctx` and treats a stale handle like a second close. A struct with no `ctx` field acts on the current context. | Rule C7: a script that uses only the helpers never calls `SetContext`. `End` selects again because a `PsychNanoVGGL` call for another window between `Begin` and `End` moves the current context. The fallback keeps a struct from before phase 3 working. |
+| The GLES2 and GLES3 backends are a Linux build option, CMake `PSYCHNANOVG_GLES=2` or `3`, and `build.m` reads the environment variable of the same name. The option replaces the GL3 backend; CMake refuses it on Windows and macOS. | `nanovg_gl.h` is one implementation unit per library (section 14.4), and glad declares the same names for GL and GLES. Psychtoolbox makes GLES contexts only through Waffle, which it builds on Linux only. |
+| The GLES build loads GL through glad's `gles2=3.0` output, `third_party/glad/include/glad/gles2.h` and `src/gles2.c`. It opens `libEGL.so.1` and `libGLESv2.so.2` at run time and links neither. The current context is `eglGetCurrentContext`, or `glXGetCurrentContext` when libGL is in the process. | The library then builds without the EGL development files, and a process that has the libraries loaded already, as Psychtoolbox with Waffle has, gets the same instance back. Waffle uses EGL for Wayland and X11/EGL and GLX for X11/GLX, and it can make a GLES context on either. |
+| The GLES backends have no GPU timer: `gpuNs` is NaN and Tracy has no GPU zone. The stencil size comes from `GL_STENCIL_BITS`. | GLES has no `GL_TIMESTAMP` query in core, and `EXT_disjoint_timer_query` is rare on the drivers that need GLES. GLES 2.0 has no attachment size query, and GLES keeps `GL_STENCIL_BITS` for the bound framebuffer. |
+| NanoVG has no GLES1 backend, so the default of a mode 1000 Psychtoolbox build, GLES1, is not covered. Such a build needs `PSYCH_USE_GFX_BACKEND=gles2` or `gles3`. | NanoVG draws with shaders, which GLES1 does not have. |
+| CI compiles both GLES backends, the library and `smoke_gl`, in the `smoke-gl-linux` job and does not run them. On 2026-09-23 both ran under WSL: `smoke_gl` passed every check in an EGL pbuffer on Mesa 23.2.1 (an OpenGL ES 3.0 context for both builds), and a GLES3 MEX passed the null renderer suite under Octave 6.4. | Section 13 asks for compile coverage. The runner has Mesa, so a later change can run the pbuffer test there too. |
+| `tests/smoke_gl.c` makes a second GL context on every platform, and has an EGL pbuffer branch for the GLES build. It adds a second NanoVG context in the same GL context: overlapping frames of the two, pixels from each, Stats per context, a render target in the second, the mismatch check against the other GL context, `Shutdown` of the context that is not current, a stale handle, and `Shutdown` from the other GL context with no GL call. | The smoke test has one window to read pixels from, so the second window of the Psychtoolbox test is a second GL context there. |
+| `tests/test_contexts.m` is a new null renderer suite, and `tests/gl/test_gl_contexts.m` a fifth GL test. `tests/gl/ptb_test_window.m` takes a window position. `test_dispatch` and `test_helpers` expect a second `Init` and a second `Open` to work. | Section 11 names neither. The GL test opens two 128x128 windows side by side, and falls back to one window when the second does not open. |
+| `m/PsychNanoVGTwoWindowDemo.m` flips both windows with `Screen('Flip', winA, [], [], [], 1)`, the multiflip form. | One call for both windows. On the development machine the multiflip, two plain flips, and a flip that does not wait all gave 60 Hz. |
+| `PsychNanoVGDemo` draws the eyes of the upstream NanoVG demo, on the gray of that demo, and takes an optional `opts` struct for a fixed frame. Each pupil aims from its own eye; upstream aims both from the right eye. `tools/CaptureReadmeScreenshot.m` captures `docs/images/psychnanovg-demo.png` from a 1280x720 window with it. | The README asked for a screenshot, and one scene of the upstream demo shows the paints and the batched `Path` form together. The eyes are five `Path` calls with `Ellipse` rows and five fills; each shape that both eyes share, and so one paint, is one call. The lighter gray showed that the cached ring copies were drawn with black corners: the render target holds premultiplied alpha, so the demo now sets `Screen('BlendFunction')` to `GL_ONE`, `GL_ONE_MINUS_SRC_ALPHA` around them. |
+| `perf/PsychNanoVGPerf.m` reports the cost of `SetContext`. | A frame per window through the helpers pays two. |
+
+Measured cost of the context indirection, MATLAB R2023a, null renderer,
+Intel Iris Xe, 2026-09-23. The phase 2 MEX (fab9db0) was renamed and loaded
+beside the phase 3 MEX in one session, and blocks of 20,000 `LineTo` calls
+alternated between the two, 30 blocks each, in two sessions. The laptop moved
+single runs of `PsychNanoVGPerf` between 0.9 and 4.9 us per call during the
+measurement, so the minimum is the number to read.
+
+| Measurement | Phase 2 | Phase 3 |
+|---|---|---|
+| `LineTo` by name, minimum over 30 blocks, two sessions | 707 / 640 ns | 681 / 639 ns |
+| `LineTo` by opcode, minimum over 30 blocks, two sessions | 539 / 569 ns | 583 / 529 ns |
+| Paired difference, phase 3 minus phase 2, median of 30 blocks, three sessions, by name / by opcode | | -155, 212, 96 ns / 25, 18, 58 ns |
+| `SetContext`, `PsychNanoVGPerf`, two runs | | 0.94 and 1.28 us per call |
+
+The difference is inside the noise in both directions. That agrees with the
+code: the per-call path lost a function call (`pnvg_state_get`) and gained
+one global load, and the statistics code reads the current pointer once more
+after the handler. `SetContext` costs what any scalar MEX call costs.

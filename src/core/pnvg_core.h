@@ -17,13 +17,39 @@
 /* NanoVG image ids count up from 1 and are never reused above this, so the
  * bitset is a cheap way to reject a stale handle before NanoVG asserts. */
 #define PNVG_MAX_IMAGES  4096
+/* One context per Psychtoolbox window is the use case, and a lab setup has a
+ * handful of windows at most. The bound also caps what a script leaks when it
+ * fails before it shuts its contexts down. */
+#define PNVG_MAX_CONTEXTS 16
+/* Per-subcommand statistic slots. The generated table has fewer entries. */
+#define PNVG_MAX_CMDS 256
 
 enum pnvg_backend {
     PNVG_BACKEND_NONE = 0,
     PNVG_BACKEND_GL3,
     PNVG_BACKEND_GL2,
-    PNVG_BACKEND_NULL
+    PNVG_BACKEND_NULL,
+    PNVG_BACKEND_GLES2,
+    PNVG_BACKEND_GLES3
 };
+
+/* The one GL backend in this build. nanovg_gl.h is a single implementation
+ * unit, so the choice is made when the library is compiled (SPEC 4.1): GL2
+ * on macOS, where Psychtoolbox makes GL 2.1 contexts, GLES2 or GLES3 on a
+ * Linux build configured for them, and GL3 everywhere else. */
+#if defined(PNVG_GL2)
+#  define PNVG_BACKEND_BUILT PNVG_BACKEND_GL2
+#  define PNVG_BACKEND_NAME  "gl2"
+#elif defined(PNVG_GLES) && PNVG_GLES == 2
+#  define PNVG_BACKEND_BUILT PNVG_BACKEND_GLES2
+#  define PNVG_BACKEND_NAME  "gles2"
+#elif defined(PNVG_GLES) && PNVG_GLES == 3
+#  define PNVG_BACKEND_BUILT PNVG_BACKEND_GLES3
+#  define PNVG_BACKEND_NAME  "gles3"
+#else
+#  define PNVG_BACKEND_BUILT PNVG_BACKEND_GL3
+#  define PNVG_BACKEND_NAME  "gl3"
+#endif
 
 /* Mirrors enum NVGcreateFlags in nanovg_gl.h. That header cannot be included
  * without a GL header in scope, and these three values are part of NanoVG's
@@ -42,7 +68,8 @@ enum pnvg_status {
     PNVG_E_FRAMESTATE,
     PNVG_E_HANDLE,
     PNVG_E_RANGE,
-    PNVG_E_USAGE
+    PNVG_E_USAGE,
+    PNVG_E_CONTEXT      /* the GL context current now is not the context's own */
 };
 
 typedef struct {
@@ -59,6 +86,21 @@ typedef struct {
 } pnvg_framestats;
 
 typedef struct {
+    double calls;
+    double totalNs;
+    double maxNs;
+} pnvg_cmdstat;
+
+/* Everything that belongs to one NanoVG context. Psychtoolbox gives each
+ * onscreen window its own userspace GL context and those contexts share no
+ * objects, so the images, fonts, render targets, timer queries, and Stats of
+ * one window cannot serve another. */
+typedef struct {
+    int id;             /* the handle a script sees; never reused */
+    int slot;           /* index in the context table */
+    /* The GL context that was current at Init, or NULL for the null
+     * renderer. Every GL subcommand compares it with the current one. */
+    void *glContext;
     NVGcontext *vg;
     int backend;
     int inFrame;
@@ -85,7 +127,9 @@ typedef struct {
     int fontCount;
 
     pnvg_glstate saved;
+    pnvg_gltimer timer;
     pnvg_framestats stats;
+    pnvg_cmdstat cmdstats[PNVG_MAX_CMDS];
 
     char glVersion[128];
     char glRenderer[128];
@@ -95,17 +139,40 @@ typedef struct {
      * per image, never on the per-call path for drawing. */
     unsigned char *scratch;
     size_t scratchBytes;
-
-    char err[256];
 } pnvg_state;
+
+/* The current context. It is never NULL: with no context current it points
+ * at an empty state whose vg is NULL, so the per-call checks read one field
+ * and need no second test. Only the functions below change it. */
+extern pnvg_state *pnvg_cur;
 
 pnvg_state *pnvg_state_get(void);
 
 /* Human-readable text for the last failure, for the caller's error message. */
 const char *pnvg_last_error(void);
 
+/* Creates a context and makes it current. Its handle is pnvg_cur->id. */
 int pnvg_init(int backend, int createFlags);
+/* Shuts the current context down. */
 int pnvg_shutdown(void);
+
+/* The live context with this handle, or NULL. */
+pnvg_state *pnvg_context_get(int id);
+/* Makes a context current. 0 leaves no context current. */
+int pnvg_context_set(int id);
+int pnvg_context_count(void);
+/* Fills ids with the handles of the live contexts, oldest first, and
+ * returns how many there are. */
+int pnvg_context_list(int *ids, int max);
+/* Deletes a context. When its GL context is not the current one, no GL call
+ * is made: the memory is freed and the GL objects are left to the driver,
+ * which deletes them with their context. *leftToDriver reports that case.
+ * When the context was current, no context is current afterwards. */
+int pnvg_context_destroy(pnvg_state *s, int *leftToDriver);
+/* PNVG_OK when s may issue GL calls now: the null renderer, or its own GL
+ * context is current. PNVG_E_NOGLCONTEXT or PNVG_E_CONTEXT otherwise. */
+int pnvg_context_check_gl(const pnvg_state *s);
+
 int pnvg_begin_frame(int w, int h, float pixelRatio);
 int pnvg_end_frame(void);
 int pnvg_cancel_frame(void);

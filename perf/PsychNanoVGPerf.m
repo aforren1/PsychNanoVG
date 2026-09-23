@@ -72,6 +72,20 @@ function s = PsychNanoVGPerf(mode)
 
     s.speedup = s.lineToTotalNs / s.polylineTotalNs;
 
+    %% ---------- context switch (phase 3) ----------
+    % A script with two windows pays one SetContext per helper call, so a
+    % frame per window costs two. A second, null context gives the switch a
+    % real target in both modes. The loop ends on the context it began on,
+    % so best() can cancel the frame that it opened.
+    cur = PsychNanoVG('SetContext');
+    other = PsychNanoVG('Init', struct('renderer', 'null'));
+    PsychNanoVG('SetContext', cur);
+    s.setContextTotalNs = best(@() loop_setcontext(cur, other, n), reps);
+    s.setContextPerCallNs = s.setContextTotalNs / (reps * n);
+    s.setContextNetNs = s.setContextPerCallNs - s.baselinePerCallNs;
+    PsychNanoVG('Shutdown', other);
+    PsychNanoVG('SetContext', cur);
+
     %% ---------- EndFrame for a demo ring and a 10000 point polyline ----------
     big = [linspace(10, w - 10, 10000)', ...
            h / 2 + 100 * sin(linspace(0, 20 * pi, 10000))'];
@@ -147,6 +161,8 @@ function s = PsychNanoVGPerf(mode)
     fprintf('  Polyline            %7.2f us per call, %6.1f ns per point\n', ...
             s.polylinePerCallNs / 1000, s.polylinePerPointNs);
     fprintf('  Polyline is %.0f times faster than per-vertex LineTo\n', s.speedup);
+    fprintf('  SetContext          %7.2f us per call (%.2f us net)\n', ...
+            s.setContextPerCallNs / 1000, s.setContextNetNs / 1000);
     fprintf('  EndFrame, ring      %7.2f us\n', s.ringEndFrameNs / 1000);
     fprintf('  EndFrame, 10000 pt  %7.2f us\n', s.polylineEndFrameNs / 1000);
     if isGL
@@ -222,6 +238,13 @@ function loop_segments(seg, col, nseg)
         PsychNanoVG('StrokePaint', p);
         PsychNanoVG('Stroke');
         PsychNanoVG('PaintDelete', p);
+    end
+end
+
+function loop_setcontext(cur, other, n)
+    for k = 1:n / 2
+        PsychNanoVG('SetContext', other);
+        PsychNanoVG('SetContext', cur);
     end
 end
 

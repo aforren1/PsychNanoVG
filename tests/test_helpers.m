@@ -34,6 +34,9 @@ function test_helpers()
     closer = onCleanup(@() shutdown_quietly()); %#ok<NASGU>
 
     tst('eq', 'Open reports the window', vg.win, 10);
+    tst('ok', 'Open reports the context handle', vg.ctx >= 1);
+    tst('eq', 'Open makes its context current', ...
+        PsychNanoVG('SetContext'), vg.ctx);
     tst('eq', 'Open reports the rect', vg.rect, [0 0 640 480]);
     tst('ok', 'Open reports that the context is live', vg.opened);
     tst('ok', 'Open returns a fonts struct', isstruct(vg.fonts));
@@ -50,11 +53,17 @@ function test_helpers()
         fprintf('   note: no system font found, the default font is skipped\n');
     end
 
-    tst('throws', 'Open twice', 'psychnanovg:AlreadyInit', ...
-        @() PsychNanoVGOpen(10, struct('renderer', 'null')));
+    % Phase 3: a second Open is a second context, not an error.
+    vgB = PsychNanoVGOpen(10, struct('renderer', 'null'));
+    tst('ok', 'Open twice gives a second context', ...
+        vgB.ctx >= 1 && vgB.ctx ~= vg.ctx);
+    PsychNanoVGClose(vgB);
+    tst('eq', 'Close of the current context leaves none current', ...
+        PsychNanoVG('SetContext'), 0);
 
     %% ---------- Frame ----------
     PNVG_SCREEN_STUB.log = {};
+    PsychNanoVG('SetContext', vg.ctx);
     PsychNanoVG('Stats', 'reset');
     PsychNanoVGFrame('Begin', vg);
     tst('ok', 'Frame Begin leaves userspace rendering active', ...
@@ -159,6 +168,64 @@ function test_helpers()
         PNVG_SCREEN_STUB.drawMode == 0);
     tst('throws', 'the context is gone after that Close too', ...
         'psychnanovg:NotInit', @() PsychNanoVG('BeginPath'));
+
+    %% ---------- two windows ----------
+    check_two_windows();
+end
+
+function check_two_windows()
+% Phase 3: one context per window. The helpers select the context of the
+% struct they get, so a script with two windows never calls SetContext.
+    global PNVG_SCREEN_STUB %#ok<GVMIS>
+    PNVG_SCREEN_STUB = pnvg_stub_reset();
+    vgA = PsychNanoVGOpen(10, struct('renderer', 'null'));
+    vgB = PsychNanoVGOpen(11, struct('renderer', 'null'));
+    tst('ok', 'two windows get two contexts', vgA.ctx ~= vgB.ctx);
+    tst('eq', 'the last Open is current', PsychNanoVG('SetContext'), vgB.ctx);
+
+    PsychNanoVGFrame('Begin', vgA);
+    tst('eq', 'Frame Begin selects the context of its window', ...
+        PsychNanoVG('SetContext'), vgA.ctx);
+    tst('eq', 'Frame Begin opens the region of its window', ...
+        PNVG_SCREEN_STUB.win, 10);
+    PsychNanoVGFrame('End', vgA);
+    for k = 1:2
+        PsychNanoVGFrame('Begin', vgB);
+        PsychNanoVG('BeginPath');
+        PsychNanoVGFrame('End', vgB);
+    end
+    PsychNanoVG('SetContext', vgA.ctx);
+    sA = PsychNanoVG('Stats');
+    PsychNanoVG('SetContext', vgB.ctx);
+    sB = PsychNanoVG('Stats');
+    tst('eq', 'Stats of window 10 counts its own frame', sA.frames, 1);
+    tst('eq', 'Stats of window 11 counts its own frames', sB.frames, 2);
+
+    imgA = PsychNanoVGGL(vgA, 'CreateImageRGBA', 0, zeros(8, 8, 4, 'uint8'));
+    tst('eq', 'GL selects the context of its window', ...
+        PsychNanoVG('SetContext'), vgA.ctx);
+    tst('eq', 'GL opens the region of its window', PNVG_SCREEN_STUB.win, 10);
+    tst('throws', 'an image of one window is not in the other', ...
+        'psychnanovg:Handle', @() PsychNanoVGGL(vgB, 'ImageSize', imgA));
+
+    % A GL call for the other window inside a frame moves the current
+    % context; End still finishes the frame it began.
+    PsychNanoVGFrame('Begin', vgA);
+    PsychNanoVGGL(vgB, 'CreateImageRGBA', 0, zeros(4, 4, 4, 'uint8'));
+    ok_call('Frame End finishes its own frame after a call for the other window', ...
+            @() PsychNanoVGFrame('End', vgA));
+    PsychNanoVG('SetContext', vgA.ctx);
+    sA = PsychNanoVG('Stats');
+    tst('eq', 'that frame was counted for window 10', sA.frames, 2);
+
+    PsychNanoVG('SetContext', vgB.ctx);
+    PsychNanoVGClose(vgA);
+    tst('eq', 'Close of the other window keeps the current context', ...
+        PsychNanoVG('SetContext'), vgB.ctx);
+    ok_call('Close of a closed window is safe', @() PsychNanoVGClose(vgA));
+    PsychNanoVGClose(vgB);
+    v = PsychNanoVG('Version');
+    tst('eq', 'no context is left', v.contexts, zeros(1, 0));
 end
 
 % ---------------------------------------------------------------------------
@@ -180,7 +247,7 @@ end
 
 function shutdown_quietly()
     try
-        PsychNanoVG('Shutdown');
+        PsychNanoVG('Shutdown', 'all');
     catch
     end
 end

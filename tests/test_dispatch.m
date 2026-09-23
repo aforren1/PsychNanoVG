@@ -14,11 +14,18 @@ function test_dispatch()
         @() PsychNanoVG({1}));
 
     %% ---------- Init ----------
-    PsychNanoVG('Init', struct('renderer', 'null'));
+    ctx = PsychNanoVG('Init', struct('renderer', 'null'));
     cleanup = onCleanup(@() shutdown_quietly());
+    tst('ok', 'Init returns a context handle', ...
+        isscalar(ctx) && ctx >= 1 && ctx == fix(ctx));
 
-    tst('throws', 'Init twice', 'psychnanovg:AlreadyInit', ...
-        @() PsychNanoVG('Init', struct('renderer', 'null')));
+    % Phase 3: a second Init is a second context, not an error. It becomes
+    % the current one, so the first is selected again for the rest of this
+    % file. test_contexts covers the rest of the context API.
+    ctx2 = PsychNanoVG('Init', struct('renderer', 'null'));
+    tst('ok', 'a second Init makes a second context', ctx2 ~= ctx);
+    PsychNanoVG('Shutdown', ctx2);
+    PsychNanoVG('SetContext', ctx);
 
     v = PsychNanoVG('Version');
     tst('ok', 'Version is a struct', isstruct(v));

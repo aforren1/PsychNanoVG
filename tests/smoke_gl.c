@@ -8,6 +8,9 @@
  *
  * Build with `build.m smoke`, or with
  *   cmake -DPSYCHNANOVG_SMOKE_GL=ON ..
+ *
+ * With -DPSYCHNANOVG_GLES=2 or 3 on Linux, the same test runs the GLES
+ * backend in an EGL pbuffer context instead of GLX.
  */
 
 #include <math.h>
@@ -23,6 +26,9 @@
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 #  include <GL/gl.h>
+#elif defined(PNVG_GLES)
+#  include <EGL/egl.h>
+#  include <GLES2/gl2.h>
 #elif defined(__APPLE__)
 #  include <OpenGL/gl.h>
 #  include <OpenGL/OpenGL.h>
@@ -94,6 +100,7 @@ static const char *find_font(void)
 static HWND g_wnd;
 static HDC g_dc;
 static HGLRC g_rc;
+static HGLRC g_rc2;   /* a second GL context, as a second PTB window has */
 
 static int platform_open(int *stencilBits)
 {
@@ -142,7 +149,15 @@ static int platform_open(int *stencilBits)
     g_rc = wglCreateContext(g_dc);
     if (!g_rc || !wglMakeCurrent(g_dc, g_rc))
         return 0;
+    g_rc2 = wglCreateContext(g_dc);
     return 1;
+}
+
+static int platform_use_alt(int alt)
+{
+    if (alt && !g_rc2)
+        return 0;
+    return wglMakeCurrent(g_dc, alt ? g_rc2 : g_rc) ? 1 : 0;
 }
 
 static void platform_swap(void)
@@ -156,15 +171,111 @@ static void platform_close(void)
         wglMakeCurrent(NULL, NULL);
         wglDeleteContext(g_rc);
     }
+    if (g_rc2)
+        wglDeleteContext(g_rc2);
     if (g_dc)
         ReleaseDC(g_wnd, g_dc);
     if (g_wnd)
         DestroyWindow(g_wnd);
 }
 
+#elif defined(PNVG_GLES)
+
+/* Psychtoolbox makes GLES contexts through Waffle on EGL, so the GLES smoke
+ * test does the same: a pbuffer, which needs no window and no X server when
+ * Mesa picks its surfaceless or device platform. */
+static EGLDisplay g_edpy = EGL_NO_DISPLAY;
+static EGLSurface g_esurf = EGL_NO_SURFACE;
+static EGLContext g_ectx = EGL_NO_CONTEXT;
+static EGLContext g_ectx2 = EGL_NO_CONTEXT;
+
+static int platform_open(int *stencilBits)
+{
+    EGLint major = 0, minor = 0, n = 0, value = 0;
+    EGLConfig cfg;
+    const EGLint cfgAttr[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE,
+#if PNVG_GLES == 3
+        EGL_OPENGL_ES3_BIT,
+#else
+        EGL_OPENGL_ES2_BIT,
+#endif
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        /* SPEC 4.1: NanoVG needs 8 stencil bits. */
+        EGL_STENCIL_SIZE, 8,
+        EGL_NONE
+    };
+    const EGLint pbAttr[] = {EGL_WIDTH, SMOKE_W, EGL_HEIGHT, SMOKE_H, EGL_NONE};
+    const EGLint ctxAttr[] = {EGL_CONTEXT_CLIENT_VERSION, PNVG_GLES, EGL_NONE};
+
+    g_edpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (g_edpy == EGL_NO_DISPLAY || !eglInitialize(g_edpy, &major, &minor)) {
+        printf("  no EGL display\n");
+        return 0;
+    }
+    printf("  EGL %d.%d\n", (int)major, (int)minor);
+    if (!eglChooseConfig(g_edpy, cfgAttr, &cfg, 1, &n) || n < 1) {
+        printf("  no EGL config with GLES %d and an 8-bit stencil buffer\n",
+               PNVG_GLES);
+        return 0;
+    }
+    eglGetConfigAttrib(g_edpy, cfg, EGL_STENCIL_SIZE, &value);
+    *stencilBits = (int)value;
+    g_esurf = eglCreatePbufferSurface(g_edpy, cfg, pbAttr);
+    if (g_esurf == EGL_NO_SURFACE) {
+        printf("  eglCreatePbufferSurface failed (0x%04X)\n", eglGetError());
+        return 0;
+    }
+    if (!eglBindAPI(EGL_OPENGL_ES_API))
+        return 0;
+    g_ectx = eglCreateContext(g_edpy, cfg, EGL_NO_CONTEXT, ctxAttr);
+    if (g_ectx == EGL_NO_CONTEXT) {
+        printf("  eglCreateContext failed (0x%04X)\n", eglGetError());
+        return 0;
+    }
+    g_ectx2 = eglCreateContext(g_edpy, cfg, EGL_NO_CONTEXT, ctxAttr);
+    if (!eglMakeCurrent(g_edpy, g_esurf, g_esurf, g_ectx)) {
+        printf("  eglMakeCurrent failed (0x%04X)\n", eglGetError());
+        return 0;
+    }
+    return 1;
+}
+
+static int platform_use_alt(int alt)
+{
+    if (alt && g_ectx2 == EGL_NO_CONTEXT)
+        return 0;
+    return eglMakeCurrent(g_edpy, g_esurf, g_esurf,
+                          alt ? g_ectx2 : g_ectx) ? 1 : 0;
+}
+
+static void platform_swap(void)
+{
+    /* A pbuffer has nothing to present. */
+    glFlush();
+}
+
+static void platform_close(void)
+{
+    if (g_edpy == EGL_NO_DISPLAY)
+        return;
+    eglMakeCurrent(g_edpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (g_ectx != EGL_NO_CONTEXT)
+        eglDestroyContext(g_edpy, g_ectx);
+    if (g_ectx2 != EGL_NO_CONTEXT)
+        eglDestroyContext(g_edpy, g_ectx2);
+    if (g_esurf != EGL_NO_SURFACE)
+        eglDestroySurface(g_edpy, g_esurf);
+    eglTerminate(g_edpy);
+    g_edpy = EGL_NO_DISPLAY;
+}
+
 #elif defined(__APPLE__)
 
 static CGLContextObj g_cgl;
+static CGLContextObj g_cgl2;
 static CGLPixelFormatObj g_pix;
 
 static CGLError choose_pixel_format(int software, CGLPixelFormatObj *pix,
@@ -221,7 +332,16 @@ static int platform_open(int *stencilBits)
         printf("  CGLSetCurrentContext failed (%d)\n", (int)err);
         return 0;
     }
+    if (CGLCreateContext(g_pix, NULL, &g_cgl2) != kCGLNoError)
+        g_cgl2 = NULL;
     return 1;
+}
+
+static int platform_use_alt(int alt)
+{
+    if (alt && !g_cgl2)
+        return 0;
+    return CGLSetCurrentContext(alt ? g_cgl2 : g_cgl) == kCGLNoError;
 }
 
 static void platform_swap(void)
@@ -236,6 +356,9 @@ static void platform_close(void)
     CGLSetCurrentContext(NULL);
     if (g_cgl)
         CGLDestroyContext(g_cgl);
+    if (g_cgl2)
+        CGLDestroyContext(g_cgl2);
+    g_cgl2 = NULL;
     if (g_pix)
         CGLDestroyPixelFormat(g_pix);
     g_cgl = NULL;
@@ -249,6 +372,7 @@ static void platform_close(void)
 static Display *g_dpy;
 static Window g_win;
 static GLXContext g_ctx;
+static GLXContext g_ctx2;
 static Colormap g_cmap;
 
 static int platform_open(int *stencilBits)
@@ -309,6 +433,7 @@ static int platform_open(int *stencilBits)
 
     /* A direct legacy context, which is what Psychtoolbox creates as well. */
     g_ctx = glXCreateContext(g_dpy, vi, NULL, True);
+    g_ctx2 = glXCreateContext(g_dpy, vi, NULL, True);
     XFree(vi);
     if (!g_ctx) {
         printf("  glXCreateContext failed\n");
@@ -319,6 +444,13 @@ static int platform_open(int *stencilBits)
         return 0;
     }
     return 1;
+}
+
+static int platform_use_alt(int alt)
+{
+    if (alt && !g_ctx2)
+        return 0;
+    return glXMakeCurrent(g_dpy, g_win, alt ? g_ctx2 : g_ctx) ? 1 : 0;
 }
 
 static void platform_swap(void)
@@ -334,6 +466,8 @@ static void platform_close(void)
     glXMakeCurrent(g_dpy, None, NULL);
     if (g_ctx)
         glXDestroyContext(g_dpy, g_ctx);
+    if (g_ctx2)
+        glXDestroyContext(g_dpy, g_ctx2);
     if (g_win)
         XDestroyWindow(g_dpy, g_win);
     if (g_cmap)
@@ -356,6 +490,132 @@ static double median(double *v, int n)
         v[j + 1] = t;
     }
     return v[n / 2];
+}
+
+/* Reads one pixel in top-left coordinates, the NanoVG convention. */
+static void read_px(int x, int y, unsigned char px[4])
+{
+    glReadPixels(x, SMOKE_H - 1 - y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+}
+
+static void fill_rect(NVGcontext *vg, float x, float y, NVGcolor c)
+{
+    nvgBeginPath(vg);
+    nvgRect(vg, x, y, 60.0f, 60.0f);
+    nvgFillColor(vg, c);
+    nvgFill(vg);
+}
+
+/* Phase 3: several NanoVG contexts. A second PTB window is a second GL
+ * context, which this test has too, but it has one window to read pixels
+ * from, so the drawing half runs two NanoVG contexts in one GL context and
+ * the other GL context is used for the checks that must refuse it. */
+static void smoke_contexts(pnvg_state *st)
+{
+    pnvg_state *st2, *st3;
+    int id1 = st->id, id2, id3, left = -1, rt;
+    double frames1 = st->stats.frames;
+    unsigned char px[4];
+
+    printf("\n  second context\n");
+    if (pnvg_init(PNVG_BACKEND_BUILT, PNVG_ANTIALIAS | PNVG_STENCIL_STROKES) != PNVG_OK) {
+        printf("  %s\n", pnvg_last_error());
+        check(0, "a second context in the same GL context");
+        return;
+    }
+    st2 = pnvg_state_get();
+    id2 = st2->id;
+    check(st2 != st && id2 != id1, "the second context has its own handle");
+    check(pnvg_context_count() == 2, "two contexts are open");
+    check(pnvg_context_check_gl(st2) == PNVG_OK,
+          "the second context accepts the GL context it was made in");
+
+    /* Frames of the two contexts overlap: each keeps its own frame state,
+     * saved GL state, and command buffer. */
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    pnvg_context_set(id1);
+    check(pnvg_begin_frame(SMOKE_W, SMOKE_H, 1.0f) == PNVG_OK,
+          "BeginFrame in context 1");
+    pnvg_context_set(id2);
+    check(pnvg_begin_frame(SMOKE_W, SMOKE_H, 1.0f) == PNVG_OK,
+          "BeginFrame in context 2 inside frame 1");
+    fill_rect(st2->vg, 20.0f, 20.0f, nvgRGBAf(0.0f, 1.0f, 0.0f, 1.0f));
+    pnvg_context_set(id1);
+    fill_rect(st->vg, 200.0f, 20.0f, nvgRGBAf(1.0f, 0.0f, 0.0f, 1.0f));
+    check(pnvg_end_frame() == PNVG_OK, "EndFrame in context 1");
+    pnvg_context_set(id2);
+    check(pnvg_end_frame() == PNVG_OK, "EndFrame in context 2");
+    check(glGetError() == GL_NO_ERROR, "no GL error after the two frames");
+    read_px(50, 50, px);
+    check(px[1] > 240 && px[0] < 16, "context 2 drew its green square");
+    read_px(230, 50, px);
+    check(px[0] > 240 && px[1] < 16, "context 1 drew its red square");
+
+    check(st2->stats.frames == 1.0, "Stats of context 2 counts its one frame");
+    check(st->stats.frames == frames1 + 1.0,
+          "Stats of context 1 counts its own frames only");
+    check(pnvg_gl_timer_available(&st2->timer) ==
+          pnvg_gl_timer_available(&st->timer),
+          "the second context has its own GPU timer ring");
+
+    /* The render target table is per context too. */
+    rt = pnvg_target_create(64, 64, 0);
+    check(rt > 0, "RenderTargetCreate in context 2");
+    if (rt > 0) {
+        check(pnvg_target_bind(rt) == PNVG_OK, "RenderTargetBind in context 2");
+        check(pnvg_begin_frame(64, 64, 1.0f) == PNVG_OK,
+              "BeginFrame on the target of context 2");
+        fill_rect(st2->vg, 2.0f, 2.0f, nvgRGBAf(0.0f, 0.0f, 1.0f, 1.0f));
+        check(pnvg_end_frame() == PNVG_OK, "EndFrame on the target of context 2");
+        check(pnvg_target_unbind() == PNVG_OK, "RenderTargetUnbind in context 2");
+    }
+
+    /* Another GL context current: the checks that PsychNanoVG('Context')
+     * reports in the MEX. */
+    if (platform_use_alt(1)) {
+        check(pnvg_context_check_gl(st2) == PNVG_E_CONTEXT,
+              "a context refuses another GL context");
+        check(pnvg_begin_frame(SMOKE_W, SMOKE_H, 1.0f) == PNVG_E_CONTEXT,
+              "BeginFrame in another GL context is refused");
+        check(glGetError() == GL_NO_ERROR,
+              "the refusal made no GL call in the other context");
+        platform_use_alt(0);
+    } else {
+        printf("  no second GL context on this platform, mismatch checks skipped\n");
+    }
+
+    /* Shutdown of the context that is not current, in its own GL context:
+     * a full teardown, and the current context stays current. */
+    pnvg_context_set(id1);
+    check(pnvg_context_destroy(pnvg_context_get(id2), &left) == PNVG_OK &&
+          left == 0, "Shutdown of the other context deletes its GL objects");
+    check(pnvg_state_get() == st, "context 1 is still current");
+    check(pnvg_context_get(id2) == NULL, "the handle of context 2 is stale");
+    check(pnvg_context_set(id2) == PNVG_E_HANDLE, "a stale handle is refused");
+    check(glGetError() == GL_NO_ERROR, "no GL error after that Shutdown");
+
+    /* Shutdown with another GL context current frees the memory and makes
+     * no GL call, because the names would mean other objects there. */
+    if (pnvg_init(PNVG_BACKEND_BUILT, PNVG_ANTIALIAS) == PNVG_OK) {
+        st3 = pnvg_state_get();
+        id3 = st3->id;
+        check(id3 > id2, "handles are not reused");
+        pnvg_context_set(id1);
+        if (platform_use_alt(1)) {
+            check(pnvg_context_destroy(st3, &left) == PNVG_OK && left == 1,
+                  "Shutdown from another GL context leaves GL objects to the driver");
+            check(glGetError() == GL_NO_ERROR,
+                  "and makes no GL call in the context that is current");
+            platform_use_alt(0);
+        } else {
+            pnvg_context_destroy(st3, &left);
+        }
+    } else {
+        check(0, "a third context for the teardown check");
+    }
+    check(pnvg_context_count() == 1, "one context is left");
+    pnvg_context_set(id1);
 }
 
 int main(void)
@@ -381,7 +641,7 @@ int main(void)
     }
     printf("  window stencil bits: %d\n", stencilBits);
 
-    if (pnvg_init(PNVG_BACKEND_GL3, PNVG_ANTIALIAS | PNVG_STENCIL_STROKES) != PNVG_OK) {
+    if (pnvg_init(PNVG_BACKEND_BUILT, PNVG_ANTIALIAS | PNVG_STENCIL_STROKES) != PNVG_OK) {
         printf("  Init failed: %s\n", pnvg_last_error());
         platform_close();
         return 1;
@@ -641,6 +901,8 @@ int main(void)
             check(pnvg_target_delete(rt) == PNVG_OK, "RenderTargetDelete");
         }
     }
+
+    smoke_contexts(st);
 
 #if SMOKE_OFFSCREEN
     check(pnvg_target_unbind() == PNVG_OK, "the offscreen target is released");

@@ -24,6 +24,7 @@ extern void h_RenderTargetDelete(int, mxArray **, int, const mxArray **);
 extern void h_RenderTargetImage(int, mxArray **, int, const mxArray **);
 extern void h_RenderTargetUnbind(int, mxArray **, int, const mxArray **);
 extern void h_ResetFallbackFonts(int, mxArray **, int, const mxArray **);
+extern void h_SetContext(int, mxArray **, int, const mxArray **);
 extern void h_Shutdown(int, mxArray **, int, const mxArray **);
 extern void h_Stats(int, mxArray **, int, const mxArray **);
 extern void h_StrokeSegments(int, mxArray **, int, const mxArray **);
@@ -1346,10 +1347,13 @@ const pnvg_cmd pnvg_cmds[] = {
         "nvgStrokePaint()." },
     { "ImageSize", h_ImageSize, 1, 1, 1, PNVG_F_INIT|PNVG_F_GL, "Images",
         "Returns the dimensions of a created image." },
-    { "Init", h_Init, 0, 1, 0, PNVG_F_GL, "Lifecycle",
-        "PsychNanoVG('Init' [, opts]). Loads GL entry points and creates "
-        "the context. opts fields: antialias, stencilStrokes, debug, "
-        "renderer ('gl3', 'gl2', or 'null' for tests)." },
+    { "Init", h_Init, 0, 1, 1, PNVG_F_GL, "Lifecycle",
+        "ctx = PsychNanoVG('Init' [, opts]). Loads GL entry points, "
+        "creates a context in the GL context that is current, makes it "
+        "the current context, and returns its handle. One context per "
+        "Psychtoolbox window. opts fields: antialias, stencilStrokes, "
+        "debug, renderer ('auto', the backend of the build, or 'null' for "
+        "tests)." },
     { "IntersectScissor", h_IntersectScissor, 4, 4, 0, PNVG_F_INIT|PNVG_F_FRAME, "Scissoring",
         "Intersects current scissor rectangle with the specified "
         "rectangle. The scissor rectangle is transformed by the current "
@@ -1499,6 +1503,12 @@ const pnvg_cmd pnvg_cmds[] = {
         "rendering a text edit or a timeline. Sets the current scissor "
         "rectangle. The scissor rectangle is transformed by the current "
         "transform." },
+    { "SetContext", h_SetContext, 0, 1, 1, 0, "Lifecycle",
+        "prev = PsychNanoVG('SetContext', ctx). Makes ctx the current "
+        "context and returns the handle that was current, 0 for none. "
+        "Every other subcommand acts on the current context. "
+        "PsychNanoVG('SetContext') with no handle returns the current one "
+        "and changes nothing." },
     { "ShapeAntiAlias", h_ShapeAntiAlias, 1, 1, 0, PNVG_F_INIT|PNVG_F_FRAME, "Render styles",
         "Render styles Fill and stroke render style can be either a solid "
         "color or a paint which is a gradient or a pattern. Solid color "
@@ -1508,9 +1518,12 @@ const pnvg_cmd pnvg_cmds[] = {
         "can be saved and restored using nvgSave() and nvgRestore(). Sets "
         "whether to draw antialias for nvgStroke() and nvgFill(). It's "
         "enabled by default." },
-    { "Shutdown", h_Shutdown, 0, 0, 0, 0, "Lifecycle",
-        "PsychNanoVG('Shutdown'). Deletes render targets, images, fonts, "
-        "and the context. Call it inside Screen('BeginOpenGL')." },
+    { "Shutdown", h_Shutdown, 0, 1, 0, 0, "Lifecycle",
+        "PsychNanoVG('Shutdown' [, ctx]). Deletes the render targets, "
+        "images, fonts, and NanoVG context of ctx, or of the current "
+        "context. Call it inside Screen('BeginOpenGL') for the window of "
+        "ctx. PsychNanoVG('Shutdown', 'all') deletes every context. The "
+        "MEX file unlocks when no context is left." },
     { "SkewX", h_SkewX, 1, 1, 0, PNVG_F_INIT|PNVG_F_FRAME, "Transforms",
         "Skews the current coordinate system along X axis. Angle is "
         "specified in radians." },
@@ -1520,8 +1533,8 @@ const pnvg_cmd pnvg_cmds[] = {
     { "Stats", h_Stats, 0, 1, 1, 0, "Lifecycle",
         "s = PsychNanoVG('Stats' [, 'reset']). Per subcommand calls, "
         "totalNs, and maxNs, plus per frame endFrameNs, gpuNs, and NanoVG "
-        "draw counters. gpuNs is NaN when the context has no GL timer "
-        "queries." },
+        "draw counters, all for the current context. gpuNs is NaN when "
+        "the context has no GL timer queries." },
     { "Stroke", h_Stroke, 0, 0, 0, PNVG_F_INIT|PNVG_F_FRAME, "Paths",
         "Fills the current path with current stroke style." },
     { "StrokeColor", h_StrokeColor, 1, 1, 0, PNVG_F_INIT|PNVG_F_FRAME, "Render styles",
@@ -1624,7 +1637,8 @@ const pnvg_cmd pnvg_cmds[] = {
         "Updates image data specified by image handle." },
     { "Version", h_Version, 0, 0, 1, 0, "Lifecycle",
         "v = PsychNanoVG('Version'). Struct with nanovg, psychnanovg, "
-        "backend, glVersion, glRenderer, and build." },
+        "backend, glVersion, glRenderer, build, context (the current "
+        "handle, 0 for none), and contexts (every open handle)." },
 };
-const int pnvg_ncmds = 120;
-const char *const pnvg_version_string = "0.1.0+nanovg.ce3bf745eb2d";
+const int pnvg_ncmds = 121;
+const char *const pnvg_version_string = "0.2.0+nanovg.ce3bf745eb2d";

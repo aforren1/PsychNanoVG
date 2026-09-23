@@ -334,6 +334,19 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: '1'
         run: xvfb-run -a ./build-smoke-linux/smoke_gl
 
+      # SPEC 14.8: Psychtoolbox makes GLES contexts on Linux through its
+      # Waffle backends, so the NanoVG GLES2 and GLES3 backends are a build
+      # option there. CI compiles both, library and smoke test, and does not
+      # run them; the EGL pbuffer run is a developer step (README).
+      - name: Compile the GLES2 and GLES3 backends
+        run: |
+          sudo apt-get install -y --no-install-recommends libegl-dev libgles-dev
+          for n in 2 3; do
+            cmake -S . -B build-gles$n -DCMAKE_BUILD_TYPE=Release \
+                  -DPSYCHNANOVG_GLES=$n -DPSYCHNANOVG_SMOKE_GL=ON
+            cmake --build build-gles$n --target smoke_gl
+          done
+
   smoke-gl-windows-compile:
     name: smoke · windows · compile only
     runs-on: windows-latest

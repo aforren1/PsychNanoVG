@@ -1,9 +1,10 @@
-function [win, rect] = ptb_test_window(w, h, screenid, bg)
+function [win, rect] = ptb_test_window(w, h, screenid, bg, xy)
 %PTB_TEST_WINDOW  Open a Psychtoolbox window for the GL tests and the demo.
 %
 %   [win, rect] = ptb_test_window()              640x480, black
 %   [win, rect] = ptb_test_window(w, h)          w by h, black
 %   [win, rect] = ptb_test_window([], [], id, bg) full screen on screen id
+%   [win, rect] = ptb_test_window(w, h, id, bg, xy) w by h, top left at xy
 %
 %   Every script in this project that opens a window goes through this
 %   function, so the two preferences below are set in one place. A test run
@@ -17,6 +18,7 @@ function [win, rect] = ptb_test_window(w, h, screenid, bg)
     if nargin < 2; h = 480; end
     if nargin < 3 || isempty(screenid); screenid = max(Screen('Screens')); end
     if nargin < 4 || isempty(bg); bg = 0; end
+    if nargin < 5 || isempty(xy); xy = [0 0]; end
 
     global GL %#ok<GVMIS>
     AssertOpenGL();
@@ -32,6 +34,7 @@ function [win, rect] = ptb_test_window(w, h, screenid, bg)
     if isempty(w) || isempty(h)
         [win, rect] = PsychImaging('OpenWindow', screenid, bg);
     else
-        [win, rect] = PsychImaging('OpenWindow', screenid, bg, [0 0 w h]);
+        [win, rect] = PsychImaging('OpenWindow', screenid, bg, ...
+                                   [xy(1) xy(2) xy(1) + w xy(2) + h]);
     end
 end

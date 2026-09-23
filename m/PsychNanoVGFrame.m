@@ -5,13 +5,18 @@ function PsychNanoVGFrame(op, vg, w, h)
 %   PsychNanoVGFrame('Begin', vg, w, h)
 %   PsychNanoVGFrame('End', vg)
 %
-%   'Begin' enters the OpenGL region and starts the frame. The default size
-%   is the window rect that PsychNanoVGOpen recorded. Pass `w` and `h` when
-%   the drawing target is not the window, for example an offscreen window or
-%   one eye of a stereo pair.
+%   'Begin' enters the OpenGL region, makes the context of `vg` current,
+%   and starts the frame. The default size is the window rect that
+%   PsychNanoVGOpen recorded. Pass `w` and `h` when the drawing target is
+%   not the window, for example an offscreen window or one eye of a stereo
+%   pair.
 %
-%   'End' finishes the frame and leaves the OpenGL region. All the OpenGL
-%   work of the frame happens in 'End'.
+%   'End' finishes the frame of `vg` and leaves the OpenGL region. All the
+%   OpenGL work of the frame happens in 'End'.
+%
+%   With two windows, each window has its own struct and its own frame. The
+%   frames follow each other and do not nest, because each one needs the
+%   OpenGL region of its own window.
 %
 %   Between the two, draw with plain PsychNanoVG calls. Screen drawing
 %   commands do not belong there: put them before 'Begin' or after 'End'.
@@ -48,6 +53,7 @@ function PsychNanoVGFrame(op, vg, w, h)
             end
             Screen('BeginOpenGL', vg.win);
             try
+                select_context(vg);
                 PsychNanoVG('BeginFrame', w, h);
             catch err
                 % The frame never started, so leave the region rather than
@@ -58,6 +64,10 @@ function PsychNanoVGFrame(op, vg, w, h)
 
         case 'end'
             try
+                % A PsychNanoVGGL call for another window between Begin and
+                % End changes the current context, and End has to finish
+                % this frame, not that one.
+                select_context(vg);
                 PsychNanoVG('EndFrame');
             catch err
                 end_gl(vg.win);
@@ -72,6 +82,14 @@ function PsychNanoVGFrame(op, vg, w, h)
 end
 
 % ---------------------------------------------------------------------------
+
+function select_context(vg)
+% A struct from before phase 3, or one built by hand, has no ctx field. The
+% current context is then the only one there is.
+    if isfield(vg, 'ctx') && vg.ctx > 0
+        PsychNanoVG('SetContext', vg.ctx);
+    end
+end
 
 function end_gl(win)
 % Screen('EndOpenGL') has to run even when the wrapped call failed. Without

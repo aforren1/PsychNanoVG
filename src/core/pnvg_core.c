@@ -19,25 +19,38 @@
 NVGcontext *pnvg_null_create(int flags);
 void pnvg_null_delete(NVGcontext *vg);
 
-/* One context per process (SPEC 1.2). A second context would need a second
- * paint table and a second frame flag, which phase 3 covers. */
-static pnvg_state g_state;
+/* SPEC 1.2 had one context per process; phase 3 has one per Psychtoolbox
+ * window. The states live on the heap because each holds the paint table
+ * and the command statistics, about 30 KB, and most processes need one. */
+static pnvg_state *g_ctx[PNVG_MAX_CONTEXTS];
+static int g_nextId;
+
+/* What pnvg_cur points at when no context is current. Nothing writes to it,
+ * so its vg stays NULL and the per-call "is there a context" test is one
+ * load with no NULL check on the pointer itself. */
+static pnvg_state g_none;
+
+pnvg_state *pnvg_cur = &g_none;
+
+/* One buffer for the whole process rather than one per context, because an
+ * Init that fails has no context left to hold its message. */
+static char g_err[256];
 
 pnvg_state *pnvg_state_get(void)
 {
-    return &g_state;
+    return pnvg_cur;
 }
 
 const char *pnvg_last_error(void)
 {
-    return g_state.err[0] ? g_state.err : "no further information";
+    return g_err[0] ? g_err : "no further information";
 }
 
 static int fail(int code, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(g_state.err, sizeof(g_state.err), fmt, ap);
+    vsnprintf(g_err, sizeof(g_err), fmt, ap);
     va_end(ap);
     return code;
 }
@@ -140,25 +153,39 @@ void pnvg_zone_unwind(void)
 /* Lifecycle                                                           */
 /* ------------------------------------------------------------------ */
 
-static void paint_table_reset(void)
+static void paint_table_reset(pnvg_state *s)
 {
     int i;
     for (i = 0; i < PNVG_MAX_PAINTS; i++) {
-        g_state.paintNext[i] = (short)(i + 1);
-        g_state.paintLive[i] = 0;
+        s->paintNext[i] = (short)(i + 1);
+        s->paintLive[i] = 0;
     }
-    g_state.paintNext[PNVG_MAX_PAINTS - 1] = -1;
-    g_state.paintFreeHead = 0;
+    s->paintNext[PNVG_MAX_PAINTS - 1] = -1;
+    s->paintFreeHead = 0;
 }
 
 int pnvg_init(int backend, int createFlags)
 {
-    if (g_state.vg)
-        return fail(PNVG_E_ALREADYINIT, "a context already exists");
+    pnvg_state *s;
+    int slot;
 
-    memset(&g_state, 0, sizeof(g_state));
-    paint_table_reset();
-    g_state.targetDepth = 0;
+    for (slot = 0; slot < PNVG_MAX_CONTEXTS; slot++)
+        if (!g_ctx[slot])
+            break;
+    if (slot == PNVG_MAX_CONTEXTS)
+        return fail(PNVG_E_RANGE,
+                    "all %d contexts are in use. Shut down the ones that "
+                    "belong to closed windows; PsychNanoVG('Shutdown', 'all') "
+                    "shuts down every context", PNVG_MAX_CONTEXTS);
+    if (backend != PNVG_BACKEND_NULL && !pnvg_gl_have_context())
+        return fail(PNVG_E_NOGLCONTEXT,
+                    "no OpenGL context is current on this thread");
+
+    s = (pnvg_state *)calloc(1, sizeof(pnvg_state));
+    if (!s)
+        return fail(PNVG_E_GLINIT, "no memory for a new context");
+    paint_table_reset(s);
+    s->slot = slot;
 #if PNVG_TRACY
     /* The MEX starts the profiler on its first call. A native program such
      * as smoke_gl has no such call, so Init does it too. */
@@ -166,129 +193,251 @@ int pnvg_init(int backend, int createFlags)
 #endif
 
     if (backend == PNVG_BACKEND_NULL) {
-        g_state.vg = pnvg_null_create(createFlags);
-        if (!g_state.vg)
+        s->vg = pnvg_null_create(createFlags);
+        if (!s->vg) {
+            free(s);
             return fail(PNVG_E_GLINIT, "the null renderer could not start");
-        snprintf(g_state.glVersion, sizeof(g_state.glVersion), "none (null renderer)");
-        snprintf(g_state.glRenderer, sizeof(g_state.glRenderer), "null");
-        g_state.stencilBits = 8;
+        }
+        snprintf(s->glVersion, sizeof(s->glVersion), "none (null renderer)");
+        snprintf(s->glRenderer, sizeof(s->glRenderer), "null");
+        s->stencilBits = 8;
     } else {
-        if (!pnvg_gl_have_context())
-            return fail(PNVG_E_NOGLCONTEXT,
-                        "no OpenGL context is current on this thread");
-        if (pnvg_gl_load() != 0)
-            return fail(PNVG_E_GLINIT, "the OpenGL entry points could not be loaded");
-        pnvg_gl_query_info(g_state.glVersion, sizeof(g_state.glVersion),
-                           g_state.glRenderer, sizeof(g_state.glRenderer),
-                           &g_state.stencilBits);
-        g_state.vg = pnvg_gl_create(backend, createFlags);
-        if (!g_state.vg)
-            return fail(PNVG_E_GLINIT, "nvgCreateGL failed for GL version %s",
-                        g_state.glVersion);
-        pnvg_gl_timer_reset();
+        if (pnvg_gl_load() != 0) {
+            free(s);
+            return fail(PNVG_E_GLINIT,
+                        "the OpenGL entry points could not be loaded");
+        }
+        s->glContext = pnvg_gl_current_context();
+        pnvg_gl_query_info(s->glVersion, sizeof(s->glVersion),
+                           s->glRenderer, sizeof(s->glRenderer),
+                           &s->stencilBits);
+        s->vg = pnvg_gl_create(backend, createFlags);
+        if (!s->vg) {
+            int code = fail(PNVG_E_GLINIT,
+                            "nvgCreate failed for GL version %s",
+                            s->glVersion);
+            free(s);
+            return code;
+        }
+        pnvg_gl_timer_reset(&s->timer, slot * PNVG_TIMER_SLOTS * 2);
     }
-    g_state.backend = backend;
-    g_state.createFlags = createFlags;
+    s->backend = backend;
+    s->createFlags = createFlags;
+    s->id = ++g_nextId;
+    g_ctx[slot] = s;
+    pnvg_cur = s;
     pnvg_stats_reset();
     return PNVG_OK;
 }
 
 void pnvg_stats_reset(void)
 {
-    memset(&g_state.stats, 0, sizeof(g_state.stats));
-    if (!g_state.vg || g_state.backend == PNVG_BACKEND_NULL ||
-        !pnvg_gl_timer_available())
-        g_state.stats.gpuNs = NAN;
+    pnvg_state *s = pnvg_cur;
+    if (!s->vg)
+        return;
+    memset(&s->stats, 0, sizeof(s->stats));
+    if (s->backend == PNVG_BACKEND_NULL || !pnvg_gl_timer_available(&s->timer))
+        s->stats.gpuNs = NAN;
+}
+
+pnvg_state *pnvg_context_get(int id)
+{
+    int i;
+    /* A linear scan of sixteen slots. Only SetContext and Shutdown with a
+     * handle come here, never the per-call path. */
+    if (id <= 0)
+        return NULL;
+    for (i = 0; i < PNVG_MAX_CONTEXTS; i++)
+        if (g_ctx[i] && g_ctx[i]->id == id)
+            return g_ctx[i];
+    return NULL;
+}
+
+int pnvg_context_set(int id)
+{
+    pnvg_state *s;
+    if (id == 0) {
+        pnvg_cur = &g_none;
+        return PNVG_OK;
+    }
+    s = pnvg_context_get(id);
+    if (!s)
+        return fail(PNVG_E_HANDLE, "%d is not an open context", id);
+    pnvg_cur = s;
+    return PNVG_OK;
+}
+
+int pnvg_context_count(void)
+{
+    int i, n = 0;
+    for (i = 0; i < PNVG_MAX_CONTEXTS; i++)
+        if (g_ctx[i])
+            n++;
+    return n;
+}
+
+int pnvg_context_list(int *ids, int max)
+{
+    int i, j, n = 0;
+    for (i = 0; i < PNVG_MAX_CONTEXTS; i++)
+        if (g_ctx[i] && n < max)
+            ids[n++] = g_ctx[i]->id;
+    /* Slots are reused, so slot order is not age order; ids are. */
+    for (i = 1; i < n; i++) {
+        int t = ids[i];
+        for (j = i - 1; j >= 0 && ids[j] > t; j--)
+            ids[j + 1] = ids[j];
+        ids[j + 1] = t;
+    }
+    return n;
+}
+
+int pnvg_context_check_gl(const pnvg_state *s)
+{
+    void *cur;
+    if (s->backend == PNVG_BACKEND_NULL)
+        return PNVG_OK;
+    cur = pnvg_gl_current_context();
+    if (!cur)
+        return fail(PNVG_E_NOGLCONTEXT,
+                    "no OpenGL context is current on this thread");
+    if (cur != s->glContext)
+        return fail(PNVG_E_CONTEXT,
+                    "the OpenGL context that is current is not the one of "
+                    "context %d. Call Screen('BeginOpenGL') for the window "
+                    "of context %d, or PsychNanoVG('SetContext') with the "
+                    "context of this window", s->id, s->id);
+    return PNVG_OK;
+}
+
+int pnvg_context_destroy(pnvg_state *s, int *leftToDriver)
+{
+    int i, gl;
+    if (leftToDriver)
+        *leftToDriver = 0;
+    if (!s || !s->vg)
+        return fail(PNVG_E_NOTINIT, "no context to shut down");
+
+    /* GL deletes run only in the context's own GL context. In another one
+     * they would delete that context's objects of the same name. */
+    gl = s->backend != PNVG_BACKEND_NULL && s->glContext &&
+         pnvg_gl_current_context() == s->glContext;
+    if (s->backend != PNVG_BACKEND_NULL && !gl && leftToDriver)
+        *leftToDriver = 1;
+
+    if (gl && s->targetDepth > 0)
+        /* A bound target would leave the window without its framebuffer. */
+        pnvg_gl_fb_bind_raw(s->targetPrevFbo[s->targetStack[0] - 1]);
+    for (i = 0; i < PNVG_MAX_TARGETS; i++) {
+        if (!s->targets[i])
+            continue;
+        if (gl)
+            pnvg_gl_fb_delete(s->targets[i]);
+        else
+            pnvg_gl_fb_free_nogl(s->targets[i]);
+        s->targets[i] = NULL;
+    }
+    /* NanoVG deletes its own images and fonts with the context. */
+    if (s->backend == PNVG_BACKEND_NULL) {
+        pnvg_null_delete(s->vg);
+    } else if (gl) {
+        pnvg_gl_timer_release(&s->timer);
+        pnvg_gl_destroy(s->vg, s->backend);
+    } else {
+        pnvg_gl_destroy_nogl(s->vg);
+    }
+
+    g_ctx[s->slot] = NULL;
+    if (pnvg_cur == s)
+        pnvg_cur = &g_none;
+    free(s->scratch);
+    free(s);
+    return PNVG_OK;
 }
 
 int pnvg_shutdown(void)
 {
-    int i;
-    if (!g_state.vg)
-        return fail(PNVG_E_NOTINIT, "no context to shut down");
-
-    for (i = 0; i < PNVG_MAX_TARGETS; i++) {
-        if (g_state.targets[i]) {
-            pnvg_gl_fb_delete(g_state.targets[i]);
-            g_state.targets[i] = NULL;
-        }
-    }
-    /* NanoVG deletes its own images and fonts with the context. */
-    if (g_state.backend == PNVG_BACKEND_NULL) {
-        pnvg_null_delete(g_state.vg);
-    } else {
-        pnvg_gl_timer_release();
-        pnvg_gl_destroy(g_state.vg, g_state.backend);
-    }
-
-    free(g_state.scratch);
-    memset(&g_state, 0, sizeof(g_state));
-    g_state.targetDepth = 0;
-    return PNVG_OK;
+    return pnvg_context_destroy(pnvg_cur, NULL);
 }
 
 int pnvg_begin_frame(int w, int h, float pixelRatio)
 {
-    if (!g_state.vg)
+    pnvg_state *s = pnvg_cur;
+    int st;
+    if (!s->vg)
         return fail(PNVG_E_NOTINIT, "call Init first");
-    if (g_state.inFrame)
+    if (s->inFrame)
         return fail(PNVG_E_FRAMESTATE, "BeginFrame inside a frame");
     if (w <= 0 || h <= 0 || pixelRatio <= 0.0f)
         return fail(PNVG_E_RANGE, "BeginFrame needs positive w, h, pixelRatio");
 
-    if (g_state.backend != PNVG_BACKEND_NULL) {
-        pnvg_gl_save(&g_state.saved);
+    if (s->backend != PNVG_BACKEND_NULL) {
+        /* The frame's GL work would otherwise land in another window's
+         * context, where this context's program and buffer names mean
+         * nothing or mean something else. */
+        st = pnvg_context_check_gl(s);
+        if (st != PNVG_OK)
+            return st;
+        pnvg_gl_save(&s->saved);
         pnvg_gl_viewport(0, 0, w, h);
-        pnvg_gl_timer_begin();
+        pnvg_gl_timer_begin(&s->timer);
     }
-    nvgBeginFrame(g_state.vg, (float)w, (float)h, pixelRatio);
-    g_state.inFrame = 1;
-    g_state.frameW = w;
-    g_state.frameH = h;
-    g_state.pixelRatio = pixelRatio;
+    nvgBeginFrame(s->vg, (float)w, (float)h, pixelRatio);
+    s->inFrame = 1;
+    s->frameW = w;
+    s->frameH = h;
+    s->pixelRatio = pixelRatio;
     return PNVG_OK;
 }
 
 int pnvg_end_frame(void)
 {
+    pnvg_state *s = pnvg_cur;
     double t0, dt;
-    int dc = 0, fc = 0, sc = 0, tc = 0;
+    int dc = 0, fc = 0, sc = 0, tc = 0, st;
 
-    if (!g_state.vg)
+    if (!s->vg)
         return fail(PNVG_E_NOTINIT, "call Init first");
-    if (!g_state.inFrame)
+    if (!s->inFrame)
         return fail(PNVG_E_FRAMESTATE, "EndFrame without BeginFrame");
+    /* The frame stays open on a mismatch, so the script can make the right
+     * GL context current and end the frame there. */
+    if (s->backend != PNVG_BACKEND_NULL) {
+        st = pnvg_context_check_gl(s);
+        if (st != PNVG_OK)
+            return st;
+    }
 
     PNVG_ZONE("nvgEndFrame");
     t0 = pnvg_now_ns();
-    nvgEndFrame(g_state.vg);
+    nvgEndFrame(s->vg);
     dt = pnvg_now_ns() - t0;
     PNVG_ZONE_END();
-    g_state.inFrame = 0;
+    s->inFrame = 0;
 
-    pnvg_nvg_counters(g_state.vg, &dc, &fc, &sc, &tc);
-    g_state.stats.frames += 1.0;
-    g_state.stats.endFrameNs = dt;
-    g_state.stats.endFrameSumNs += dt;
-    if (dt > g_state.stats.endFrameMaxNs)
-        g_state.stats.endFrameMaxNs = dt;
-    g_state.stats.drawCalls = dc;
-    g_state.stats.fillCount = fc;
-    g_state.stats.strokeCount = sc;
-    g_state.stats.textCount = tc;
-    g_state.stats.vertexCount = (double)(fc + sc + tc) * 3.0;
+    pnvg_nvg_counters(s->vg, &dc, &fc, &sc, &tc);
+    s->stats.frames += 1.0;
+    s->stats.endFrameNs = dt;
+    s->stats.endFrameSumNs += dt;
+    if (dt > s->stats.endFrameMaxNs)
+        s->stats.endFrameMaxNs = dt;
+    s->stats.drawCalls = dc;
+    s->stats.fillCount = fc;
+    s->stats.strokeCount = sc;
+    s->stats.textCount = tc;
+    s->stats.vertexCount = (double)(fc + sc + tc) * 3.0;
 
-    if (g_state.backend != PNVG_BACKEND_NULL) {
+    if (s->backend != PNVG_BACKEND_NULL) {
         unsigned int e;
         /* Separate zones, because the driver can do its submission work in
          * any of these calls rather than in nvgEndFrame. */
         PNVG_ZONE("GPU timer");
-        pnvg_gl_timer_end();
-        if (pnvg_gl_timer_available())
-            g_state.stats.gpuNs = pnvg_gl_timer_read();
+        pnvg_gl_timer_end(&s->timer);
+        if (pnvg_gl_timer_available(&s->timer))
+            s->stats.gpuNs = pnvg_gl_timer_read(&s->timer);
         PNVG_ZONE_END();
         PNVG_ZONE("GL restore and error drain");
-        pnvg_gl_restore(&g_state.saved);
+        pnvg_gl_restore(&s->saved);
         /* R3: Screen('EndOpenGL') aborts on a pending error, so drain here
          * and report it against EndFrame rather than against PTB. */
         e = pnvg_gl_drain_error();
@@ -302,19 +451,26 @@ int pnvg_end_frame(void)
 
 int pnvg_cancel_frame(void)
 {
-    if (!g_state.vg)
+    pnvg_state *s = pnvg_cur;
+    int st;
+    if (!s->vg)
         return fail(PNVG_E_NOTINIT, "call Init first");
-    if (!g_state.inFrame)
+    if (!s->inFrame)
         return fail(PNVG_E_FRAMESTATE, "CancelFrame without BeginFrame");
-    nvgCancelFrame(g_state.vg);
-    g_state.inFrame = 0;
-    if (g_state.backend != PNVG_BACKEND_NULL) {
+    if (s->backend != PNVG_BACKEND_NULL) {
+        st = pnvg_context_check_gl(s);
+        if (st != PNVG_OK)
+            return st;
+    }
+    nvgCancelFrame(s->vg);
+    s->inFrame = 0;
+    if (s->backend != PNVG_BACKEND_NULL) {
         /* BeginFrame wrote the first timestamp and, with Tracy, opened a GPU
          * zone. Both need their end, or the ring and Tracy disagree. */
-        pnvg_gl_timer_end();
-        if (pnvg_gl_timer_available())
-            g_state.stats.gpuNs = pnvg_gl_timer_read();
-        pnvg_gl_restore(&g_state.saved);
+        pnvg_gl_timer_end(&s->timer);
+        if (pnvg_gl_timer_available(&s->timer))
+            s->stats.gpuNs = pnvg_gl_timer_read(&s->timer);
+        pnvg_gl_restore(&s->saved);
     }
     return PNVG_OK;
 }
@@ -325,30 +481,30 @@ int pnvg_cancel_frame(void)
 
 int pnvg_paint_alloc(const NVGpaint *p)
 {
-    int idx = g_state.paintFreeHead;
+    int idx = pnvg_cur->paintFreeHead;
     if (idx < 0)
         return -1;
-    g_state.paintFreeHead = g_state.paintNext[idx];
-    g_state.paints[idx] = *p;
-    g_state.paintLive[idx] = 1;
+    pnvg_cur->paintFreeHead = pnvg_cur->paintNext[idx];
+    pnvg_cur->paints[idx] = *p;
+    pnvg_cur->paintLive[idx] = 1;
     return idx + 1;
 }
 
 int pnvg_paint_fetch(int idx, NVGpaint *out)
 {
-    if (idx < 1 || idx > PNVG_MAX_PAINTS || !g_state.paintLive[idx - 1])
+    if (idx < 1 || idx > PNVG_MAX_PAINTS || !pnvg_cur->paintLive[idx - 1])
         return PNVG_E_HANDLE;
-    *out = g_state.paints[idx - 1];
+    *out = pnvg_cur->paints[idx - 1];
     return PNVG_OK;
 }
 
 int pnvg_paint_release(int idx)
 {
-    if (idx < 1 || idx > PNVG_MAX_PAINTS || !g_state.paintLive[idx - 1])
+    if (idx < 1 || idx > PNVG_MAX_PAINTS || !pnvg_cur->paintLive[idx - 1])
         return PNVG_E_HANDLE;
-    g_state.paintLive[idx - 1] = 0;
-    g_state.paintNext[idx - 1] = g_state.paintFreeHead;
-    g_state.paintFreeHead = (short)(idx - 1);
+    pnvg_cur->paintLive[idx - 1] = 0;
+    pnvg_cur->paintNext[idx - 1] = pnvg_cur->paintFreeHead;
+    pnvg_cur->paintFreeHead = (short)(idx - 1);
     return PNVG_OK;
 }
 
@@ -362,32 +518,32 @@ int pnvg_paint_release(int idx)
  * that check here. */
 void pnvg_font_mark(int id)
 {
-    if (id >= 0 && id >= g_state.fontCount)
-        g_state.fontCount = id + 1;
+    if (id >= 0 && id >= pnvg_cur->fontCount)
+        pnvg_cur->fontCount = id + 1;
 }
 
 int pnvg_font_is_live(int id)
 {
-    return id >= 0 && id < g_state.fontCount;
+    return id >= 0 && id < pnvg_cur->fontCount;
 }
 
 void pnvg_image_mark(int id)
 {
     if (id > 0 && id < PNVG_MAX_IMAGES)
-        g_state.imageLive[id >> 5] |= 1u << (id & 31);
+        pnvg_cur->imageLive[id >> 5] |= 1u << (id & 31);
 }
 
 void pnvg_image_unmark(int id)
 {
     if (id > 0 && id < PNVG_MAX_IMAGES)
-        g_state.imageLive[id >> 5] &= ~(1u << (id & 31));
+        pnvg_cur->imageLive[id >> 5] &= ~(1u << (id & 31));
 }
 
 int pnvg_image_is_live(int id)
 {
     if (id <= 0 || id >= PNVG_MAX_IMAGES)
         return 0;
-    return (g_state.imageLive[id >> 5] >> (id & 31)) & 1u;
+    return (pnvg_cur->imageLive[id >> 5] >> (id & 31)) & 1u;
 }
 
 const unsigned char *pnvg_image_transpose(const unsigned char *src, int h, int w)
@@ -400,16 +556,16 @@ const unsigned char *pnvg_image_transpose(const unsigned char *src, int h, int w
     if (need == 0)
         return NULL;
     PNVG_ZONE("ImageTranspose");
-    if (g_state.scratchBytes < need) {
-        unsigned char *p = (unsigned char *)realloc(g_state.scratch, need);
+    if (pnvg_cur->scratchBytes < need) {
+        unsigned char *p = (unsigned char *)realloc(pnvg_cur->scratch, need);
         if (!p) {
             PNVG_ZONE_END();
             return NULL;
         }
-        g_state.scratch = p;
-        g_state.scratchBytes = need;
+        pnvg_cur->scratch = p;
+        pnvg_cur->scratchBytes = need;
     }
-    d = g_state.scratch;
+    d = pnvg_cur->scratch;
     /* Writes run straight through the destination; the reads stride by h.
      * One pass either way, and the sequential stores are the cheaper half. */
     for (r = 0; r < h; r++) {
@@ -423,7 +579,7 @@ const unsigned char *pnvg_image_transpose(const unsigned char *src, int h, int w
         }
     }
     PNVG_ZONE_END();
-    return g_state.scratch;
+    return pnvg_cur->scratch;
 }
 
 /* ------------------------------------------------------------------ */
@@ -443,7 +599,7 @@ const unsigned char *pnvg_image_transpose(const unsigned char *src, int h, int w
 
 int pnvg_polyline(const void *data, int n, int isSingle, int close)
 {
-    NVGcontext *vg = g_state.vg;
+    NVGcontext *vg = pnvg_cur->vg;
     if (!vg)
         return fail(PNVG_E_NOTINIT, "call Init first");
     if (n <= 0)
@@ -470,7 +626,7 @@ int pnvg_polyline(const void *data, int n, int isSingle, int close)
 
 int pnvg_circles(const void *data, int n, int isSingle)
 {
-    NVGcontext *vg = g_state.vg;
+    NVGcontext *vg = pnvg_cur->vg;
     if (!vg)
         return fail(PNVG_E_NOTINIT, "call Init first");
     PNVG_ZONE("Circles");
@@ -494,7 +650,7 @@ int pnvg_circles(const void *data, int n, int isSingle)
 
 int pnvg_rects(const void *data, int n, int isSingle)
 {
-    NVGcontext *vg = g_state.vg;
+    NVGcontext *vg = pnvg_cur->vg;
     if (!vg)
         return fail(PNVG_E_NOTINIT, "call Init first");
     PNVG_ZONE("Rects");
@@ -592,7 +748,7 @@ int pnvg_rects(const void *data, int n, int isSingle)
 
 int pnvg_path_matrix(const void *data, int n, int isSingle)
 {
-    NVGcontext *vg = g_state.vg;
+    NVGcontext *vg = pnvg_cur->vg;
     if (!vg)
         return fail(PNVG_E_NOTINIT, "call Init first");
     if (isSingle)
@@ -638,7 +794,7 @@ static int color_eq(NVGcolor a, NVGcolor b)
 int pnvg_stroke_segments(const void *seg, int segSingle, const void *col,
                          int colSingle, int n)
 {
-    NVGcontext *vg = g_state.vg;
+    NVGcontext *vg = pnvg_cur->vg;
     NVGpaint saved;
     int i = 0;
 
@@ -697,29 +853,29 @@ int pnvg_target_create(int w, int h, int imageFlags)
     void *fb;
     /* These two report a handle, so a failure is -1 rather than a status
      * code: a status code would be mistaken for a valid slot. */
-    if (!g_state.vg) {
+    if (!pnvg_cur->vg) {
         fail(PNVG_E_NOTINIT, "call Init first");
         return -1;
     }
-    if (g_state.backend == PNVG_BACKEND_NULL) {
+    if (pnvg_cur->backend == PNVG_BACKEND_NULL) {
         fail(PNVG_E_GLINIT, "render targets need a GL renderer");
         return -1;
     }
     for (i = 0; i < PNVG_MAX_TARGETS; i++)
-        if (!g_state.targets[i])
+        if (!pnvg_cur->targets[i])
             break;
     if (i == PNVG_MAX_TARGETS) {
         fail(PNVG_E_RANGE, "all %d render target slots are in use",
              PNVG_MAX_TARGETS);
         return -1;
     }
-    fb = pnvg_gl_fb_create(g_state.vg, w, h, imageFlags);
+    fb = pnvg_gl_fb_create(pnvg_cur->vg, w, h, imageFlags);
     if (!fb) {
         fail(PNVG_E_GLERROR, "nvgluCreateFramebuffer failed for %dx%d", w, h);
         return -1;
     }
-    g_state.targets[i] = fb;
-    g_state.targetPrevFbo[i] = 0;
+    pnvg_cur->targets[i] = fb;
+    pnvg_cur->targetPrevFbo[i] = 0;
     pnvg_image_mark(pnvg_gl_fb_image(fb));
     return i + 1;
 }
@@ -728,14 +884,14 @@ void *pnvg_target_ptr(int rt)
 {
     if (rt < 1 || rt > PNVG_MAX_TARGETS)
         return NULL;
-    return g_state.targets[rt - 1];
+    return pnvg_cur->targets[rt - 1];
 }
 
 static int target_stack_find(int rt)
 {
     int i;
-    for (i = 0; i < g_state.targetDepth; i++)
-        if (g_state.targetStack[i] == rt)
+    for (i = 0; i < pnvg_cur->targetDepth; i++)
+        if (pnvg_cur->targetStack[i] == rt)
             return i;
     return -1;
 }
@@ -748,22 +904,22 @@ int pnvg_target_bind(int rt)
     if (target_stack_find(rt) >= 0)
         return fail(PNVG_E_FRAMESTATE,
                     "render target %d is already bound", rt);
-    if (g_state.targetDepth >= PNVG_MAX_TARGETS)
+    if (pnvg_cur->targetDepth >= PNVG_MAX_TARGETS)
         return fail(PNVG_E_RANGE, "render target binds nest more than %d deep",
                     PNVG_MAX_TARGETS);
-    g_state.targetPrevFbo[rt - 1] = pnvg_gl_current_fbo();
+    pnvg_cur->targetPrevFbo[rt - 1] = pnvg_gl_current_fbo();
     pnvg_gl_fb_bind(fb);
-    g_state.targetStack[g_state.targetDepth++] = rt;
+    pnvg_cur->targetStack[pnvg_cur->targetDepth++] = rt;
     return PNVG_OK;
 }
 
 int pnvg_target_unbind(void)
 {
     int rt;
-    if (g_state.targetDepth < 1)
+    if (pnvg_cur->targetDepth < 1)
         return fail(PNVG_E_FRAMESTATE, "no render target is bound");
-    rt = g_state.targetStack[--g_state.targetDepth];
-    pnvg_gl_fb_bind_raw(g_state.targetPrevFbo[rt - 1]);
+    rt = pnvg_cur->targetStack[--pnvg_cur->targetDepth];
+    pnvg_gl_fb_bind_raw(pnvg_cur->targetPrevFbo[rt - 1]);
     return PNVG_OK;
 }
 
@@ -785,8 +941,8 @@ int pnvg_target_delete(int rt)
     /* Deleting a bound target unwinds the stack down to it, so the
      * framebuffer that was current before it was bound comes back. */
     if (target_stack_find(rt) >= 0) {
-        while (g_state.targetDepth > 0) {
-            int top = g_state.targetStack[g_state.targetDepth - 1];
+        while (pnvg_cur->targetDepth > 0) {
+            int top = pnvg_cur->targetStack[pnvg_cur->targetDepth - 1];
             pnvg_target_unbind();
             if (top == rt)
                 break;
@@ -794,6 +950,6 @@ int pnvg_target_delete(int rt)
     }
     pnvg_image_unmark(pnvg_gl_fb_image(fb));
     pnvg_gl_fb_delete(fb);
-    g_state.targets[rt - 1] = NULL;
+    pnvg_cur->targets[rt - 1] = NULL;
     return PNVG_OK;
 }

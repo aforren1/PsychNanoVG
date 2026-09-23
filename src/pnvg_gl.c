@@ -6,18 +6,53 @@
  * include path.
  */
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+/* RTLD_DEFAULT, for the GLX fallback of the GLES build. */
+#  define _GNU_SOURCE
+#endif
+
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#include <glad/gl.h>
+/* PNVG_GLES selects a GLES backend on Linux (CMake PSYCHNANOVG_GLES). glad
+ * then loads the GLES 2.0 and 3.0 entry points instead of desktop GL 3.3;
+ * the two headers declare the same names, so a build has one or the other. */
+#if defined(PNVG_GLES)
+#  include <glad/gles2.h>
+#else
+#  include <glad/gl.h>
+#endif
 
 #include "nanovg.h"
 
 #if defined(PNVG_GL2)
 #  define NANOVG_GL2_IMPLEMENTATION
+#  define PNVG_NVG_CREATE      nvgCreateGL2
+#  define PNVG_NVG_DELETE      nvgDeleteGL2
+#  define PNVG_NVG_FROM_HANDLE nvglCreateImageFromHandleGL2
+#  define PNVG_NVG_HANDLE      nvglImageHandleGL2
+#elif defined(PNVG_GLES) && PNVG_GLES == 2
+#  define NANOVG_GLES2_IMPLEMENTATION
+#  define PNVG_NVG_CREATE      nvgCreateGLES2
+#  define PNVG_NVG_DELETE      nvgDeleteGLES2
+#  define PNVG_NVG_FROM_HANDLE nvglCreateImageFromHandleGLES2
+#  define PNVG_NVG_HANDLE      nvglImageHandleGLES2
+#elif defined(PNVG_GLES) && PNVG_GLES == 3
+#  define NANOVG_GLES3_IMPLEMENTATION
+#  define PNVG_NVG_CREATE      nvgCreateGLES3
+#  define PNVG_NVG_DELETE      nvgDeleteGLES3
+#  define PNVG_NVG_FROM_HANDLE nvglCreateImageFromHandleGLES3
+#  define PNVG_NVG_HANDLE      nvglImageHandleGLES3
+#elif defined(PNVG_GLES)
+#  error "PNVG_GLES must be 2 or 3"
 #else
 #  define NANOVG_GL3_IMPLEMENTATION
+#  define PNVG_NVG_CREATE      nvgCreateGL3
+#  define PNVG_NVG_DELETE      nvgDeleteGL3
+#  define PNVG_NVG_FROM_HANDLE nvglCreateImageFromHandleGL3
+#  define PNVG_NVG_HANDLE      nvglImageHandleGL3
 #endif
 #include "nanovg_gl.h"
 
@@ -74,9 +109,9 @@ static GLADapiproc pnvg_get_proc(const char *name)
     return (GLADapiproc)p;
 }
 
-int pnvg_gl_have_context(void)
+void *pnvg_gl_current_context(void)
 {
-    return wglGetCurrentContext() != NULL;
+    return (void *)wglGetCurrentContext();
 }
 
 #elif defined(__APPLE__)
@@ -96,9 +131,73 @@ static GLADapiproc pnvg_get_proc(const char *name)
 
 extern void *CGLGetCurrentContext(void);
 
-int pnvg_gl_have_context(void)
+void *pnvg_gl_current_context(void)
 {
-    return CGLGetCurrentContext() != NULL;
+    return CGLGetCurrentContext();
+}
+
+#elif defined(PNVG_GLES)
+
+/* Psychtoolbox makes GLES contexts only through its Waffle display backends
+ * (SPEC 14.8), which use EGL on Wayland and X11/EGL and GLX on X11/GLX. Both
+ * libraries are opened at run time, so the build needs neither the EGL
+ * development files nor a link against libEGL, and a process that already
+ * has them loaded gets the same instance back. */
+typedef void *(*pnvg_pfn_current)(void);
+typedef GLADapiproc (*pnvg_pfn_getproc)(const char *name);
+
+static int g_eglTried;
+static void *g_libegl;
+static void *g_libgles;
+static pnvg_pfn_current p_eglGetCurrentContext;
+static pnvg_pfn_getproc p_eglGetProcAddress;
+static pnvg_pfn_current p_glXGetCurrentContext;
+
+static void egl_open(void)
+{
+    if (g_eglTried)
+        return;
+    g_eglTried = 1;
+    g_libegl = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_LOCAL);
+    if (g_libegl) {
+        p_eglGetCurrentContext =
+            (pnvg_pfn_current)dlsym(g_libegl, "eglGetCurrentContext");
+        p_eglGetProcAddress =
+            (pnvg_pfn_getproc)dlsym(g_libegl, "eglGetProcAddress");
+    }
+    /* Only when libGL is already in the process, which it is under a
+     * Waffle GLX backend. */
+    p_glXGetCurrentContext =
+        (pnvg_pfn_current)dlsym(RTLD_DEFAULT, "glXGetCurrentContext");
+}
+
+static GLADapiproc pnvg_get_proc(const char *name)
+{
+    GLADapiproc p = NULL;
+    egl_open();
+    /* EGL 1.5 and EGL_KHR_get_all_proc_addresses return core entry points
+     * too. An older EGL returns only extensions, so the core ones then come
+     * from the GLES library itself. */
+    if (p_eglGetProcAddress)
+        p = p_eglGetProcAddress(name);
+    if (!p) {
+        if (!g_libgles)
+            g_libgles = dlopen("libGLESv2.so.2", RTLD_LAZY | RTLD_LOCAL);
+        if (g_libgles)
+            p = (GLADapiproc)dlsym(g_libgles, name);
+    }
+    return p;
+}
+
+void *pnvg_gl_current_context(void)
+{
+    void *c = NULL;
+    egl_open();
+    if (p_eglGetCurrentContext)
+        c = p_eglGetCurrentContext();   /* EGL_NO_CONTEXT is 0 */
+    if (!c && p_glXGetCurrentContext)
+        c = p_glXGetCurrentContext();
+    return c;
 }
 
 #else /* X11 and Linux */
@@ -113,21 +212,34 @@ static GLADapiproc pnvg_get_proc(const char *name)
     return glXGetProcAddressARB((const unsigned char *)name);
 }
 
-int pnvg_gl_have_context(void)
+void *pnvg_gl_current_context(void)
 {
-    return glXGetCurrentContext() != NULL;
+    return glXGetCurrentContext();
 }
 
 #endif
 
+int pnvg_gl_have_context(void)
+{
+    return pnvg_gl_current_context() != NULL;
+}
+
+/* The entry points are loaded once per process, not once per context. Every
+ * Psychtoolbox window of one process runs on one driver, and Psychtoolbox
+ * itself initializes GLEW once in the same way. */
 static int g_loaded;
 
 int pnvg_gl_load(void)
 {
     if (g_loaded)
         return 0;
+#if defined(PNVG_GLES)
+    if (gladLoadGLES2(pnvg_get_proc) == 0)
+        return 1;
+#else
     if (gladLoadGL(pnvg_get_proc) == 0)
         return 1;
+#endif
     g_loaded = 1;
     return 0;
 }
@@ -148,6 +260,13 @@ void pnvg_gl_query_info(char *ver, size_t nver, char *rend, size_t nrend,
     snprintf(rend, nrend, "%s", s ? (const char *)s : "unknown");
 
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
+#if defined(PNVG_GLES)
+    /* GLES keeps GL_STENCIL_BITS for the bound framebuffer, whether it is
+     * the default one or an object, and GLES 2.0 has no attachment size
+     * query. */
+    (void)fbo;
+    glGetIntegerv(GL_STENCIL_BITS, &bits);
+#else
     if (fbo != 0) {
         glGetFramebufferAttachmentParameteriv(
             GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
@@ -155,6 +274,7 @@ void pnvg_gl_query_info(char *ver, size_t nver, char *rend, size_t nrend,
     } else {
         glGetIntegerv(GL_STENCIL_BITS, &bits);
     }
+#endif
     /* A missing stencil attachment is a legitimate query failure, so clear
      * the error rather than leaving it for Screen('EndOpenGL'). */
     while (glGetError() != GL_NO_ERROR)
@@ -164,13 +284,8 @@ void pnvg_gl_query_info(char *ver, size_t nver, char *rend, size_t nrend,
 
 struct NVGcontext *pnvg_gl_create(int backend, int flags)
 {
-#if defined(PNVG_GL2)
     (void)backend;
-    return nvgCreateGL2(flags);
-#else
-    (void)backend;
-    return nvgCreateGL3(flags);
-#endif
+    return PNVG_NVG_CREATE(flags);
 }
 
 void pnvg_gl_destroy(struct NVGcontext *vg, int backend)
@@ -178,11 +293,41 @@ void pnvg_gl_destroy(struct NVGcontext *vg, int backend)
     (void)backend;
     if (!vg)
         return;
-#if defined(PNVG_GL2)
-    nvgDeleteGL2(vg);
-#else
-    nvgDeleteGL3(vg);
-#endif
+    PNVG_NVG_DELETE(vg);
+}
+
+/* The two backend callbacks that issue GL calls during nvgDeleteInternal,
+ * replaced by versions that only free memory. The field list follows
+ * glnvg__renderDelete in nanovg_gl.h. */
+static int nogl_delete_texture(void *uptr, int image)
+{
+    (void)uptr;
+    (void)image;
+    return 1;
+}
+
+static void nogl_render_delete(void *uptr)
+{
+    GLNVGcontext *gl = (GLNVGcontext *)uptr;
+    if (!gl)
+        return;
+    free(gl->textures);
+    free(gl->paths);
+    free(gl->verts);
+    free(gl->uniforms);
+    free(gl->calls);
+    free(gl);
+}
+
+void pnvg_gl_destroy_nogl(struct NVGcontext *vg)
+{
+    NVGparams *params;
+    if (!vg)
+        return;
+    params = nvgInternalParams(vg);
+    params->renderDeleteTexture = nogl_delete_texture;
+    params->renderDelete = nogl_render_delete;
+    nvgDeleteInternal(vg);
 }
 
 /* ------------------------------------------------------------------ */
@@ -243,8 +388,10 @@ const char *pnvg_gl_error_name(unsigned int e)
     case GL_OUT_OF_MEMORY:     return "GL_OUT_OF_MEMORY";
     case GL_INVALID_FRAMEBUFFER_OPERATION:
         return "GL_INVALID_FRAMEBUFFER_OPERATION";
+#if defined(GL_STACK_OVERFLOW)
     case GL_STACK_OVERFLOW:    return "GL_STACK_OVERFLOW";
     case GL_STACK_UNDERFLOW:   return "GL_STACK_UNDERFLOW";
+#endif
     default:                   return "an unknown error";
     }
 }
@@ -257,21 +404,13 @@ int pnvg_gl_image_from_handle(struct NVGcontext *vg, unsigned int tex,
                               int w, int h, int flags, int backend)
 {
     (void)backend;
-#if defined(PNVG_GL2)
-    return nvglCreateImageFromHandleGL2(vg, (GLuint)tex, w, h, flags);
-#else
-    return nvglCreateImageFromHandleGL3(vg, (GLuint)tex, w, h, flags);
-#endif
+    return PNVG_NVG_FROM_HANDLE(vg, (GLuint)tex, w, h, flags);
 }
 
 unsigned int pnvg_gl_image_handle(struct NVGcontext *vg, int image, int backend)
 {
     (void)backend;
-#if defined(PNVG_GL2)
-    return (unsigned int)nvglImageHandleGL2(vg, image);
-#else
-    return (unsigned int)nvglImageHandleGL3(vg, image);
-#endif
+    return (unsigned int)PNVG_NVG_HANDLE(vg, image);
 }
 
 void *pnvg_gl_fb_create(struct NVGcontext *vg, int w, int h, int imageFlags)
@@ -282,6 +421,11 @@ void *pnvg_gl_fb_create(struct NVGcontext *vg, int w, int h, int imageFlags)
 void pnvg_gl_fb_delete(void *fb)
 {
     nvgluDeleteFramebuffer((NVGLUframebuffer *)fb);
+}
+
+void pnvg_gl_fb_free_nogl(void *fb)
+{
+    free(fb);
 }
 
 void pnvg_gl_fb_bind(void *fb)
@@ -315,24 +459,15 @@ int pnvg_gl_current_fbo(void)
 /* GPU timing (SPEC 9.2) and the Tracy GPU zone (SPEC 9.3)             */
 /* ------------------------------------------------------------------ */
 
-/* Three slots: the one being written, and two frames of latency before a
- * pair is read, so the readback never waits on the GPU in the common case. */
-#define PNVG_TIMER_SLOTS 3
-
-static GLuint g_q[PNVG_TIMER_SLOTS][2];
-static int g_qfilled[PNVG_TIMER_SLOTS];
-static int g_qslot;
-static int g_qready;
-static int g_qopen;           /* a begin stamp is waiting for its end */
-static double g_gpuNs;
+#if !defined(PNVG_GLES)
 
 #if PNVG_TRACY
 /* One Tracy GPU context per process. A new id per Init would use up the 255
- * that Tracy has, and the GL timestamp base is the same device either way. */
+ * that Tracy has, and the GL timestamp base is the same device either way.
+ * Each NanoVG context's ring takes its own range of query ids in it. */
 static uint8_t g_tracyCtx;
 static int g_tracyCtxReady;
 static int g_tracyCtxFailed;
-static int g_tracySlot[PNVG_TIMER_SLOTS];  /* the slot's zone reached Tracy */
 static const pnvg_srcloc g_gpuFrameLoc = {
     "NanoVG frame", "pnvg_gl_timer_begin", __FILE__, (uint32_t)__LINE__, 0};
 
@@ -368,19 +503,20 @@ static void tracy_gpu_context(void)
     g_tracyCtxReady = 1;
 }
 
-static void tracy_gpu_times(int slot, GLuint64 t0, GLuint64 t1)
+static void tracy_gpu_times(pnvg_gltimer *t, int slot, GLuint64 t0,
+                            GLuint64 t1)
 {
     struct ___tracy_gpu_time_data d;
-    if (!g_tracySlot[slot])
+    if (!t->tracySlot[slot])
         return;
     d.context = g_tracyCtx;
-    d.queryId = (uint16_t)(slot * 2);
+    d.queryId = (uint16_t)(t->qidBase + slot * 2);
     d.gpuTime = (int64_t)t0;
     ___tracy_emit_gpu_time_serial(d);
-    d.queryId = (uint16_t)(slot * 2 + 1);
+    d.queryId = (uint16_t)(t->qidBase + slot * 2 + 1);
     d.gpuTime = (int64_t)t1;
     ___tracy_emit_gpu_time_serial(d);
-    g_tracySlot[slot] = 0;
+    t->tracySlot[slot] = 0;
 }
 #endif
 
@@ -399,9 +535,9 @@ static int has_extension(const char *name)
     return 0;
 }
 
-static void timer_init(void)
+static void timer_init(pnvg_gltimer *t)
 {
-    if (g_qready)
+    if (t->ready)
         return;
     /* glad loads the GL 3.3 entry points only from a 3.3 context. On an
      * older context with GL_ARB_timer_query the same unsuffixed names exist,
@@ -416,122 +552,147 @@ static void timer_init(void)
         !glad_glGenQueries || !glad_glGetQueryObjectiv ||
         !glad_glDeleteQueries)
         return;
-    glGenQueries(PNVG_TIMER_SLOTS * 2, &g_q[0][0]);
-    g_qready = 1;
+    glGenQueries(PNVG_TIMER_SLOTS * 2, &t->q[0][0]);
+    t->ready = 1;
 }
 
-void pnvg_gl_timer_reset(void)
+void pnvg_gl_timer_reset(pnvg_gltimer *t, int qidBase)
 {
-    memset(g_qfilled, 0, sizeof(g_qfilled));
-    g_qslot = 0;
-    g_qready = 0;
-    g_qopen = 0;
-    g_gpuNs = 0.0;
-    timer_init();
+    memset(t, 0, sizeof(*t));
+    t->qidBase = qidBase;
+    timer_init(t);
 #if PNVG_TRACY
-    memset(g_tracySlot, 0, sizeof(g_tracySlot));
-    if (g_qready)
+    if (t->ready)
         tracy_gpu_context();
 #endif
 }
 
-int pnvg_gl_timer_available(void)
+int pnvg_gl_timer_available(const pnvg_gltimer *t)
 {
-    return g_qready;
+    return t->ready;
 }
 
 /* Reads one slot. With wait set it blocks until the GPU is done. */
-static int timer_collect(int slot, int wait)
+static int timer_collect(pnvg_gltimer *t, int slot, int wait)
 {
     GLuint64 t0 = 0, t1 = 0;
     if (!wait) {
         GLint a0 = 0, a1 = 0;
-        glGetQueryObjectiv(g_q[slot][0], GL_QUERY_RESULT_AVAILABLE, &a0);
-        glGetQueryObjectiv(g_q[slot][1], GL_QUERY_RESULT_AVAILABLE, &a1);
+        glGetQueryObjectiv(t->q[slot][0], GL_QUERY_RESULT_AVAILABLE, &a0);
+        glGetQueryObjectiv(t->q[slot][1], GL_QUERY_RESULT_AVAILABLE, &a1);
         if (!a0 || !a1)
             return 0;
     }
-    glGetQueryObjectui64v(g_q[slot][0], GL_QUERY_RESULT, &t0);
-    glGetQueryObjectui64v(g_q[slot][1], GL_QUERY_RESULT, &t1);
-    g_gpuNs = (double)(t1 - t0);
-    g_qfilled[slot] = 0;
+    glGetQueryObjectui64v(t->q[slot][0], GL_QUERY_RESULT, &t0);
+    glGetQueryObjectui64v(t->q[slot][1], GL_QUERY_RESULT, &t1);
+    t->gpuNs = (double)(t1 - t0);
+    t->filled[slot] = 0;
 #if PNVG_TRACY
-    tracy_gpu_times(slot, t0, t1);
+    tracy_gpu_times(t, slot, t0, t1);
 #endif
     return 1;
 }
 
-void pnvg_gl_timer_begin(void)
+void pnvg_gl_timer_begin(pnvg_gltimer *t)
 {
-    if (!g_qready)
+    if (!t->ready)
         return;
-    glQueryCounter(g_q[g_qslot][0], GL_TIMESTAMP);
-    g_qopen = 1;
+    glQueryCounter(t->q[t->slot][0], GL_TIMESTAMP);
+    t->open = 1;
 #if PNVG_TRACY
     if (g_tracyCtxReady && pnvg_prof_started()) {
         struct ___tracy_gpu_zone_begin_data d;
         d.srcloc = (uint64_t)(uintptr_t)&g_gpuFrameLoc;
-        d.queryId = (uint16_t)(g_qslot * 2);
+        d.queryId = (uint16_t)(t->qidBase + t->slot * 2);
         d.context = g_tracyCtx;
         ___tracy_emit_gpu_zone_begin_serial(d);
-        g_tracySlot[g_qslot] = 1;
+        t->tracySlot[t->slot] = 1;
     }
 #endif
 }
 
-void pnvg_gl_timer_end(void)
+void pnvg_gl_timer_end(pnvg_gltimer *t)
 {
     int read;
-    if (!g_qready || !g_qopen)
+    if (!t->ready || !t->open)
         return;
-    glQueryCounter(g_q[g_qslot][1], GL_TIMESTAMP);
-    g_qfilled[g_qslot] = 1;
-    g_qopen = 0;
+    glQueryCounter(t->q[t->slot][1], GL_TIMESTAMP);
+    t->filled[t->slot] = 1;
+    t->open = 0;
 #if PNVG_TRACY
-    if (g_tracySlot[g_qslot]) {
+    if (t->tracySlot[t->slot]) {
         struct ___tracy_gpu_zone_end_data d;
-        d.queryId = (uint16_t)(g_qslot * 2 + 1);
+        d.queryId = (uint16_t)(t->qidBase + t->slot * 2 + 1);
         d.context = g_tracyCtx;
         ___tracy_emit_gpu_zone_end_serial(d);
     }
 #endif
 
     /* The oldest slot, two frames back, is the next one to be written. */
-    read = (g_qslot + 1) % PNVG_TIMER_SLOTS;
-    if (g_qfilled[read]) {
+    read = (t->slot + 1) % PNVG_TIMER_SLOTS;
+    if (t->filled[read]) {
         int wait = 0;
 #if PNVG_TRACY
         /* Tracy was told that this zone began and ended, and waits for both
          * timestamps. The next BeginFrame overwrites the slot, so a late
          * pair is waited for here instead of dropped. Without Tracy it is
          * dropped, and Stats keeps the previous value. */
-        wait = g_tracySlot[read];
+        wait = t->tracySlot[read];
 #endif
-        timer_collect(read, wait);
+        timer_collect(t, read, wait);
     }
-    g_qslot = (g_qslot + 1) % PNVG_TIMER_SLOTS;
+    t->slot = (t->slot + 1) % PNVG_TIMER_SLOTS;
 }
 
-void pnvg_gl_timer_release(void)
+void pnvg_gl_timer_release(pnvg_gltimer *t)
 {
     int k;
-    if (!g_qready)
+    if (!t->ready)
         return;
-    if (g_qopen)
-        pnvg_gl_timer_end();
+    if (t->open)
+        pnvg_gl_timer_end(t);
     /* Tracy would otherwise keep the last frames as zones without an end. */
     for (k = 0; k < PNVG_TIMER_SLOTS; k++) {
 #if PNVG_TRACY
-        if (g_qfilled[k] && g_tracySlot[k])
-            timer_collect(k, 1);
+        if (t->filled[k] && t->tracySlot[k])
+            timer_collect(t, k, 1);
 #endif
-        g_qfilled[k] = 0;
+        t->filled[k] = 0;
     }
-    glDeleteQueries(PNVG_TIMER_SLOTS * 2, &g_q[0][0]);
-    g_qready = 0;
+    glDeleteQueries(PNVG_TIMER_SLOTS * 2, &t->q[0][0]);
+    t->ready = 0;
 }
 
-double pnvg_gl_timer_read(void)
+double pnvg_gl_timer_read(const pnvg_gltimer *t)
 {
-    return g_gpuNs;
+    return t->gpuNs;
 }
+
+#else /* PNVG_GLES */
+
+/* GLES has no GL_TIMESTAMP query in core; EXT_disjoint_timer_query is
+ * optional and rare on the embedded drivers that need GLES at all. Stats
+ * reports gpuNs as NaN and Tracy gets no GPU zone. */
+void pnvg_gl_timer_reset(pnvg_gltimer *t, int qidBase)
+{
+    memset(t, 0, sizeof(*t));
+    t->qidBase = qidBase;
+}
+
+int pnvg_gl_timer_available(const pnvg_gltimer *t)
+{
+    (void)t;
+    return 0;
+}
+
+void pnvg_gl_timer_begin(pnvg_gltimer *t) { (void)t; }
+void pnvg_gl_timer_end(pnvg_gltimer *t) { (void)t; }
+void pnvg_gl_timer_release(pnvg_gltimer *t) { (void)t; }
+
+double pnvg_gl_timer_read(const pnvg_gltimer *t)
+{
+    (void)t;
+    return 0.0;
+}
+
+#endif

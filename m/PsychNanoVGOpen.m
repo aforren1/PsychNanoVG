@@ -1,5 +1,5 @@
 function vg = PsychNanoVGOpen(win, opts)
-%PSYCHNANOVGOPEN  Create the NanoVG context for an open Psychtoolbox window.
+%PSYCHNANOVGOPEN  Create a NanoVG context for an open Psychtoolbox window.
 %
 %   vg = PsychNanoVGOpen(win)
 %   vg = PsychNanoVGOpen(win, opts)
@@ -16,10 +16,18 @@ function vg = PsychNanoVGOpen(win, opts)
 %
 %     vg.win      the window handle
 %     vg.rect     the window rect, the default frame size
+%     vg.ctx      the context handle from PsychNanoVG('Init')
 %     vg.opened   true when the context is live
 %     vg.fonts    a struct of font handles. `sans` is the default font, and
 %                 `sansFile` is the file it came from. Both are absent when
 %                 no system font was found.
+%
+%   Call it once per window. Psychtoolbox gives every onscreen window its
+%   own OpenGL context, and the fonts, images, and render targets of one
+%   context do not exist in another, so each window needs its own. The new
+%   context becomes the current one. PsychNanoVGFrame, PsychNanoVGGL, and
+%   PsychNanoVGClose make vg.ctx current again before they act, so a script
+%   with two windows never calls PsychNanoVG('SetContext') itself.
 %
 %   Example:
 %       InitializeMatlabOpenGL(1);
@@ -34,7 +42,8 @@ function vg = PsychNanoVGOpen(win, opts)
 %       Screen('Flip', win);
 %       PsychNanoVGClose(vg);
 %
-%   See also PsychNanoVGFrame, PsychNanoVGGL, PsychNanoVGClose, PsychNanoVG.
+%   See also PsychNanoVGFrame, PsychNanoVGGL, PsychNanoVGClose, PsychNanoVG,
+%   PsychNanoVGTwoWindowDemo.
 
     if nargin < 1 || isempty(win)
         error('psychnanovg:Usage', ...
@@ -62,12 +71,12 @@ function vg = PsychNanoVGOpen(win, opts)
                '    vg = PsychNanoVGOpen(win);']);
     end
 
-    vg = struct('win', win, 'rect', Screen('Rect', win), ...
+    vg = struct('win', win, 'rect', Screen('Rect', win), 'ctx', 0, ...
                 'opened', false, 'fonts', struct());
 
     Screen('BeginOpenGL', win);
     try
-        PsychNanoVG('Init', opts);
+        vg.ctx = PsychNanoVG('Init', opts);
     catch err
         end_gl(win);
         rethrow(err);
