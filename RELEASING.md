@@ -6,18 +6,22 @@ one zip per engine and platform. You never build release binaries by hand.
 
 ## The scripted way
 
-`do_release.ps1` in the repository root runs steps 1, 2, 4, 5 and 6 below from a
+`do_release.ps1` in the repository root runs steps 1, 4, 5 and 6 below from a
 clean `main` and stops at the first failed check:
 
 ```
 .\do_release.ps1 -Version 0.2.0
 ```
 
-`-DryRun` shows what it would do and changes nothing; `-SkipLocalTests` skips
-step 2 when the suite already ran on this exact tree. Step 3, the document
+It starts only from a tree identical to a green `origin/main`, sets the version,
+commits, tags, and pushes commit and tag in one go, so CI runs once, on the tag,
+and that run publishes the release. `-DryRun` shows what it would do and changes
+nothing. `-LocalTests` also runs step 2 first; it is off by default because CI
+has run on this tree and runs again on the tag. `-NoWait` returns right after
+the push and prints the run to watch, skipping step 6. Step 3, the document
 updates, the GL tests and demos under Psychtoolbox, and reading the generated
-release notes stay by hand. After a red CI run, fix the cause and rerun the
-script with the same version; it continues from the version commit.
+release notes stay by hand. After a red tag run, fix the cause, delete the tag
+(`git tag -d v0.2.0; git push origin :refs/tags/v0.2.0`) and rerun.
 
 ## Before you start
 

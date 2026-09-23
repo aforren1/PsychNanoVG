@@ -3,11 +3,12 @@
 Release PsychNanoVG 0.2.0: set the version, verify, push, tag, and check the published zip.
 
 .DESCRIPTION
-Runs the checklist in RELEASING.md from a clean main branch. CI builds every
-package and publishes the GitHub Release when the tag lands; this script never
-builds release binaries itself. It stops at the first failed check and leaves
-the tree in the state it reached, so a rerun after a fix continues from the
-version commit.
+Runs the checklist in RELEASING.md from a clean main branch that matches a
+green origin/main. It sets the version, commits, tags, and pushes commit and
+tag together, so CI runs once, on the tag, and that run publishes the GitHub
+Release; this script never builds release binaries itself. It stops at the
+first failed check. After a red tag run, fix the cause, delete the tag
+(git tag -d vX; git push origin :refs/tags/vX) and rerun.
 
 The steps it does not do, because they need judgment: updating SPEC.md,
 README.md and DEV.md for the release (step 3), the GL tests and demos under
@@ -16,9 +17,15 @@ Psychtoolbox (part of step 2), and reading the generated release notes.
 .PARAMETER Version
 The new version, for example 0.2.0. It becomes the tag v0.2.0.
 
-.PARAMETER SkipLocalTests
-Skip the MATLAB and Octave "build test" runs of step 2. Use it only when they
-ran already on this exact tree.
+.PARAMETER LocalTests
+Also run the MATLAB and Octave "build test" suites of step 2 before pushing.
+Off by default: the script starts only from a tree identical to a green
+origin/main, and CI runs the full matrix again on the tag, so a local run
+repeats what CI has done and will do.
+
+.PARAMETER NoWait
+Return right after the push and print the CI run to watch. The release still
+publishes from that run; step 6, the check of the published zip, is skipped.
 
 .PARAMETER DryRun
 Print what would happen. Nothing is edited, committed, pushed or tagged.
@@ -27,14 +34,15 @@ Print what would happen. Nothing is edited, committed, pushed or tagged.
 .\do_release.ps1 -Version 0.2.0
 
 .EXAMPLE
-.\do_release.ps1 -Version 0.2.1 -SkipLocalTests
+.\do_release.ps1 -Version 0.2.1 -LocalTests
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string]$Version,
-    [switch]$SkipLocalTests,
+    [switch]$LocalTests,
+    [switch]$NoWait,
     [switch]$DryRun
 )
 
@@ -52,7 +60,7 @@ $VersionEdits = @(
     @{ File = 'gen/generate.py'; Pattern = 'version = "\d+\.\d+\.\d+\+nanovg\.'; Replacement = 'version = "{V}+nanovg.' }
 )
 $NeedsGen    = $true                                 # the generator stamps the version into sources
-$LocalTests  = @(
+$LocalTestRuns = @(
     @{ Label = 'MATLAB build test'; Exe = 'matlab'; Args = @('-batch', 'build test') },
     @{ Label = 'Octave build test'; Exe = 'octave'; Args = @('--eval', 'build test') }
 )
@@ -85,7 +93,7 @@ $local  = (git rev-parse HEAD).Trim()
 $remote = (git rev-parse 'origin/main').Trim()
 if ($local -ne $remote) { Fail "main is not in sync with origin/main (local $local, remote $remote)" }
 if (git tag --list $Tag) { Fail "tag $Tag already exists" }
-& gh auth status 2>$null | Out-Null
+try { & gh auth status 2>$null | Out-Null } catch { }
 if ($LASTEXITCODE -ne 0) { Fail "gh is not authenticated; run gh auth login" }
 # --json plus ConvertFrom-Json: PowerShell 5.1 rewrites the quotes and backslashes
 # of a jq string before gh sees them.
@@ -120,16 +128,19 @@ if ($NeedsGen) {
 }
 
 # ---- 2. verify locally ------------------------------------------------------
-if ($SkipLocalTests) {
-    Step "Local tests skipped on request"
+if (-not $LocalTests) {
+    Step "Local tests not requested; CI on the tag is the check (-LocalTests runs them)"
 } elseif ($DryRun) {
-    Step "Would run the local tests"; $LocalTests | ForEach-Object { Write-Host "  $($_.Exe) $($_.Args -join ' ')" }
+    Step "Would run the local tests"; $LocalTestRuns | ForEach-Object { Write-Host "  $($_.Exe) $($_.Args -join ' ')" }
 } else {
-    foreach ($t in $LocalTests) {
+    foreach ($t in $LocalTestRuns) {
         Step "Local tests: $($t.Label)"
         $exe = if ($t.Exe -eq 'matlab') { $Matlab } else { $Octave }
-        $out = & $exe @($t.Args) 2>&1 | Tee-Object -Variable captured | Out-String
-        Write-Host $out
+        # stdout streams to the console and is kept; stderr goes to the console
+        # untouched. A 2>&1 here would turn every stderr line, such as an .octaverc
+        # warning, into an error record that stops the script.
+        & $exe @($t.Args) | Tee-Object -Variable lines | Out-Host
+        $out = $lines | Out-String
         if ($LASTEXITCODE -ne 0) { Fail "$($t.Label) exited with $LASTEXITCODE" }
         if (-not ($out -match '==== \d+ passed, 0 failed ====')) { Fail "$($t.Label) did not report 0 failed" }
     }
@@ -137,12 +148,12 @@ if ($SkipLocalTests) {
 }
 
 if ($DryRun) {
-    Step "Dry run: would commit 'Release $Tag', push, wait for CI, tag $Tag, push the tag, wait again, then check $WindowsZip"
+    Step "Dry run: would commit Release $Tag, tag $Tag, push both, wait for the tag run, then check $WindowsZip"
     exit 0
 }
 
-# ---- 4. push and wait for green ---------------------------------------------
-Step "Commit and push the version"
+# ---- 4 and 5. commit, tag, push once ------------------------------------------
+Step "Commit the version and tag $Tag"
 $staged = git status --porcelain --ignore-submodules=dirty
 if ($staged) {
     Invoke-Git @('add', '-A')
@@ -150,32 +161,38 @@ if ($staged) {
 } else {
     Write-Host "nothing to commit; the version was already in place"
 }
-Invoke-Git @('push', '--quiet', 'origin', 'main')
 $sha = (git rev-parse HEAD).Trim()
-
-function Wait-Run([string]$commit, [string]$what) {
-    Step "Wait for CI on $what ($commit)"
-    $id = $null
-    for ($i = 0; $i -lt 30 -and -not $id; $i++) {
-        Start-Sleep -Seconds 10
-        $id = gh run list --commit $commit --limit 1 --json databaseId --jq '.[0].databaseId'
-    }
-    if (-not $id) { Fail "no CI run appeared for $commit" }
-    Write-Host "run $id"
-    & gh run watch $id --exit-status --interval 30
-    if ($LASTEXITCODE -ne 0) {
-        $jobs = (gh run view $id --json jobs | ConvertFrom-Json).jobs
-        $jobs | Where-Object { $_.conclusion -ne 'success' } | ForEach-Object { Write-Host ('  {0}  {1}' -f $_.conclusion, $_.name) }
-        Fail "CI is red for $what; fix it, then rerun this script with the same -Version"
-    }
-}
-Wait-Run $sha 'the release commit'
-
-# ---- 5. tag -----------------------------------------------------------------
-Step "Tag $Tag"
 Invoke-Git @('tag', '-a', $Tag, '-m', "$Name $Tag")
-Invoke-Git @('push', '--quiet', 'origin', $Tag)
-Wait-Run $sha "the tag $Tag"
+# One push for commit and tag: the tag run builds, tests and publishes, and a
+# separate run on the commit would only repeat it.
+Invoke-Git @('push', '--quiet', 'origin', 'main', $Tag)
+
+function Find-Run([string]$commit, [string]$ref) {
+    # One push of main and the tag starts two runs on the same commit, one per
+    # ref, and only the tag run has the release job. Pick it by its ref name.
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Seconds 10
+        $runs = gh run list --commit $commit --limit 10 --json databaseId,headBranch | ConvertFrom-Json
+        $hit = $runs | Where-Object { $_.headBranch -eq $ref } | Select-Object -First 1
+        if ($hit) { return $hit.databaseId }
+    }
+    Fail "no CI run appeared for $ref at $commit"
+}
+
+$runId = Find-Run $sha $Tag
+$runUrl = gh run view $runId --json url --jq .url
+if ($NoWait) {
+    Write-Host "Pushed $Tag. CI run: $runUrl"
+    Write-Host "When it is green the release is published; check it with: gh release view $Tag"
+    exit 0
+}
+Step "Wait for the tag run ($runUrl)"
+& gh run watch $runId --exit-status --interval 30
+if ($LASTEXITCODE -ne 0) {
+    $jobs = (gh run view $runId --json jobs | ConvertFrom-Json).jobs
+    $jobs | Where-Object { $_.conclusion -ne 'success' } | ForEach-Object { Write-Host ('  {0}  {1}' -f $_.conclusion, $_.name) }
+    Fail "the tag run is red, so nothing was published. Fix the cause, delete the tag (git tag -d $Tag; git push origin :refs/tags/$Tag) and rerun."
+}
 
 # ---- 6. check the release ---------------------------------------------------
 Step "Check the release"
@@ -189,8 +206,8 @@ $unz = Join-Path $dir 'unzipped'
 Expand-Archive -Path (Join-Path $dir $WindowsZip) -DestinationPath $unz
 # A fresh MATLAB follows the README install steps literally, with nothing else on the path.
 $check = "addpath('$unz'); $SetupName; v = $MexName('Version'); fprintf('RELEASE_VERSION=%s\n', v.$VersionField);"
-$out = & $Matlab -batch $check 2>&1 | Out-String
-Write-Host $out
+& $Matlab -batch $check | Tee-Object -Variable lines | Out-Host
+$out = $lines | Out-String
 if (-not ($out -match "RELEASE_VERSION=$([regex]::Escape($Version))")) { Fail "the downloaded zip does not report version $Version" }
 Write-Host ""
 Write-Host "Released $Name $Tag" -ForegroundColor Green
