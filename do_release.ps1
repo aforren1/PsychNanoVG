@@ -99,7 +99,13 @@ if ($LASTEXITCODE -ne 0) { Fail "gh is not authenticated; run gh auth login" }
 # of a jq string before gh sees them.
 $lastRun = (gh run list --branch main --limit 1 --json conclusion,headSha | ConvertFrom-Json)[0]
 Write-Host "last CI run on main: $($lastRun.conclusion) $($lastRun.headSha)"
-if ($lastRun.conclusion -ne 'success') { Fail "the last CI run on main is not green; fix that first" }
+if ($lastRun.conclusion -ne 'success') {
+    # With -NoWait the tag run is the check the caller has chosen, so a red or
+    # unfinished run on main is only a note; without it, a tag on a red commit
+    # publishes nothing and wastes the wait.
+    if ($NoWait) { Write-Host "note: the last CI run on main is not green; the tag run decides" -ForegroundColor Yellow }
+    else { Fail "the last CI run on main is not green; fix that first, or pass -NoWait" }
+}
 if (Select-String -Path 'README.md' -Pattern 'first release is pending' -Quiet) {
     Write-Host "note: README.md still says the first release is pending; RELEASING.md step 3 says to remove it after this release" -ForegroundColor Yellow
 }
