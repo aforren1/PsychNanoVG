@@ -137,7 +137,14 @@ function changed = remove_package(dirs)
             % The check below decides.
         end
     end
-    clear('PsychNanoVG');
+    % Octave's plain clear leaves a loaded function in place, so the MEX
+    % stayed resident and the rmpath below crashed Octave 10.1 on Linux
+    % (the path-change-with-loaded-MEX class). -f clears functions.
+    if exist('OCTAVE_VERSION', 'builtin') ~= 0
+        clear('-f', 'PsychNanoVG');
+    else
+        clear('PsychNanoVG');
+    end
     if mislocked('PsychNanoVG')
         error('psychnanovg:Locked', ...
               ['PsychNanoVG is still loaded and locked, so the path was ' ...
