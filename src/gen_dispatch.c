@@ -1641,4 +1641,4 @@ const pnvg_cmd pnvg_cmds[] = {
         "handle, 0 for none), and contexts (every open handle)." },
 };
 const int pnvg_ncmds = 121;
-const char *const pnvg_version_string = "0.2.0+nanovg.ce3bf745eb2d";
+const char *const pnvg_version_string = "0.3.0+nanovg.ce3bf745eb2d";

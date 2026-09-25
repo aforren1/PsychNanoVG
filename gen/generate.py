@@ -1259,7 +1259,7 @@ def main():
             dropped.append((cname, str(e)))
 
     bindings.sort(key=lambda b: b.mname)
-    version = "0.2.0+nanovg.%s" % nanovg_commit()
+    version = "0.3.0+nanovg.%s" % nanovg_commit()
 
     cmds = emit_dispatch(bindings, os.path.join(ROOT, "src", "gen_dispatch.c"),
                          version)

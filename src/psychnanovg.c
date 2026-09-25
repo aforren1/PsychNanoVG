@@ -15,7 +15,7 @@
 
 /* SPEC 9.1: the version of the binding itself, separate from the NanoVG
  * commit that the generator stamps into pnvg_version_string. */
-#define PNVG_VERSION "0.2.0"
+#define PNVG_VERSION "0.3.0"
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                              */

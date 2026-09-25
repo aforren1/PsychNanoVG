@@ -15,7 +15,7 @@ function varargout = PsychNanoVG(varargin)  %#ok<STOUT>
 %   helpers PsychNanoVGOpen, PsychNanoVGFrame, PsychNanoVGGL, and
 %   PsychNanoVGClose select the context of their window for you.
 %
-%   Version: 0.2.0+nanovg.ce3bf745eb2d
+%   Version: 0.3.0+nanovg.ce3bf745eb2d
 %
 %   --- Batch ---
 %%     Circles                  PsychNanoVG('Circles', cxyr). Nx3 double or single. One Circle...
