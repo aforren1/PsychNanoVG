@@ -24,6 +24,9 @@ function img = PsychNanoVGDemo(screenid, duration, opts)
 %     opts.pointer   a fixed [x y] for the eyes to look at, instead of the
 %                    mouse
 %     opts.time      a fixed time in seconds for the blink of the eyes
+%     opts.MouseIndex  PTB device index of the mouse the eyes follow, from
+%                    GetMouseIndices; [] or absent takes PTB's default. A
+%                    lab machine with several mice needs this.
 %
 %   When `img` is asked for, the demo reads the last frame back with
 %   Screen('GetImage') and returns it as an HxWx3 uint8 array.
@@ -344,7 +347,11 @@ function [mx, my] = pointer(win, useMouse, opts, w, h, t)
         return;
     end
     try
-        [mx, my] = GetMouse(win);
+        if isfield(opts, 'MouseIndex') && ~isempty(opts.MouseIndex)
+            [mx, my] = GetMouse(win, opts.MouseIndex);
+        else
+            [mx, my] = GetMouse(win);
+        end
     catch
         mx = w / 2 + 0.4 * w * sin(0.7 * t);
         my = h / 2 + 0.3 * h * sin(1.4 * t);
